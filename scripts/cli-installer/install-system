@@ -142,8 +142,6 @@ zh_TW.UTF-8 UTF-8
 zu_ZA.UTF-8 UTF-8"
 
 TARGET_ROOT="/target"           # where the new system will be assembled
-TARGET_BOOT=""                  # /boot mountpoint (only when encrypted/manual)
-TARGET_EFI=""                   # /boot/efi mountpoint
 MOUNT_POINTS=()                 # stack of mounts to undo on failure/exit
 
 # User answers (filled in by the steps)
@@ -156,14 +154,12 @@ TIMEZONE=""                     # e.g. America/New_York
 DISK_MODE=""                    # erase | manual
 DISK_TARGET=""                  # e.g. /dev/sda
 EFI_PART=""                     # e.g. /dev/sda1
-BOOT_PART=""                    # e.g. /dev/sda2   (only for LUKS/manual)
 ROOT_PART=""                    # e.g. /dev/sda3
 SWAP_PART=""                    # e.g. /dev/sda4
 USERNAME=""
 FULLNAME=""
 PASSWORD=""
 HOSTNAME=""
-ROOT_PASSWORD=""
 
 UI_MODE=""                      # tui | text (picked at welcome)
 USE_NTP=1
@@ -178,15 +174,13 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_RED=$'\033[31m'
     C_GREEN=$'\033[32m'
     C_YELLOW=$'\033[33m'
-    C_BLUE=$'\033[34m'
     C_MAGENTA=$'\033[35m'
     C_CYAN=$'\033[36m'
 else
     C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""
-    C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_MAGENTA=""; C_CYAN=""
+    C_GREEN=""; C_YELLOW=""; C_MAGENTA=""; C_CYAN=""
 fi
 
-log()   { printf '%s==>%s %s\n' "$C_BLUE$C_BOLD" "$C_RESET$C_BOLD" "$*$C_RESET"; }
 info()  { printf '%s[i]%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
 ok()    { printf '%s[+]%s %s\n' "$C_GREEN$C_BOLD" "$C_RESET$C_BOLD" "$*$C_RESET"; }
 warn()  { printf '%s[!]%s %s\n' "$C_YELLOW$C_BOLD" "$C_RESET" "$*$C_BOLD" >&2; }
@@ -321,6 +315,36 @@ text_choice() {
 }
 
 # -----------------------------------------------------------------------------
+# Architecture & Distro Detection
+# -----------------------------------------------------------------------------
+target_arch() {
+    if [ -x "$TARGET_ROOT/usr/bin/dpkg" ]; then
+        chroot "$TARGET_ROOT" dpkg --print-architecture 2>/dev/null && return 0
+    fi
+    case "$(uname -m)" in
+        x86_64|amd64)  echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *)             uname -m ;;
+    esac
+}
+
+host_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64)  echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *)             uname -m ;;
+    esac
+}
+
+target_bootloader_id() {
+    if [ -r "$TARGET_ROOT/etc/os-release" ] && grep -qs '^ID=pop$' "$TARGET_ROOT/etc/os-release"; then
+        echo "pop"
+    else
+        echo "ubuntu"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Prompt helpers (TUI mode — whiptail, fall back to dialog)
 # -----------------------------------------------------------------------------
 have_whiptail() { command -v whiptail >/dev/null 2>&1; }
@@ -337,61 +361,75 @@ tui_msg() {
 }
 
 tui_yesno() {
-    # tui_yesno <title> <text> [<default 0|1>] — sets REPLY to 0 (yes) or 1 (no)
-    local title="$1" text="$2" default="${3:-0}"
-    local rc
+    # tui_yesno <title> <text> [<default y|n|0|1>] — sets REPLY to y or n
+    local title="$1" text="$2" default="${3:-y}"
+    local rc=0
+    local -a extra=()
+    if [ "$default" = "n" ] || [ "$default" = "1" ]; then
+        extra+=(--defaultno)
+    fi
     if have_whiptail; then
-        whiptail --title "$title" --yesno "$text" 12 72 --defaultno
-        # whiptail does not honour --defaultno vs --default-yes; emulate via default param.
-        rc=$?
+        whiptail --title "$title" "${extra[@]}" --yesno "$text" 12 72 || rc=$?
     else
-        dialog --title "$title" --yesno "$text" 12 72
-        rc=$?
+        dialog --title "$title" "${extra[@]}" --yesno "$text" 12 72 || rc=$?
     fi
     if [ "$rc" -eq 0 ]; then REPLY="y"; else REPLY="n"; fi
 }
 
 tui_input() {
     # tui_input <title> <text> <default> — sets REPLY
-    local title="$1" text="$2" default="${3:-}" rc
+    local title="$1" text="$2" default="${3:-}" rc=0
     if have_whiptail; then
-        REPLY="$(whiptail --title "$title" --inputbox "$text" 10 72 "$default" 3>&1 1>&2 2>&3)" || true
+        REPLY="$(whiptail --title "$title" --inputbox "$text" 10 72 "$default" 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --title "$title" --inputbox "$text" 10 72 "$default" 3>&1 1>&2 2>&3)" || true
+        REPLY="$(dialog --title "$title" --inputbox "$text" 10 72 "$default" 3>&1 1>&2 2>&3)" || rc=$?
     fi
+    [ "$rc" -eq 0 ] || die "Cancelled by user."
     [ -z "$REPLY" ] && REPLY="$default"
 }
 
 tui_password() {
     # tui_password <title> <text> — sets REPLY
-    local title="$1" text="$2" rc
+    local title="$1" text="$2" rc=0
     if have_whiptail; then
-        REPLY="$(whiptail --title "$title" --passwordbox "$text" 10 72 3>&1 1>&2 2>&3)" || true
+        REPLY="$(whiptail --title "$title" --passwordbox "$text" 10 72 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --title "$title" --passwordbox "$text" 10 72 3>&1 1>&2 2>&3)" || true
+        REPLY="$(dialog --title "$title" --passwordbox "$text" 10 72 3>&1 1>&2 2>&3)" || rc=$?
     fi
+    [ "$rc" -eq 0 ] || die "Cancelled by user."
 }
 
 tui_menu() {
     # tui_menu <title> <text> <default_tag> <choice_tag> <choice_text>...
-    # sets REPLY to the chosen tag.
     local title="$1" text="$2" default="$3"; shift 3
-    local rc
+    local rc=0
+    local -a cmd_prefix=()
+    [ -n "$default" ] && cmd_prefix=(--default-item "$default")
     if have_whiptail; then
-        REPLY="$(whiptail --title "$title" --menu "$text" 20 72 12 "$@" --default-item "$default" 3>&1 1>&2 2>&3)" || true
+        REPLY="$(whiptail --title "$title" "${cmd_prefix[@]}" --menu "$text" 20 72 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --title "$title" --menu "$text" 20 72 12 "$@" 3>&1 1>&2 2>&3)" || true
+        REPLY="$(dialog --title "$title" "${cmd_prefix[@]}" --menu "$text" 20 72 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
     fi
+    [ "$rc" -eq 0 ] || die "Cancelled by user."
 }
 
 # -----------------------------------------------------------------------------
 # Mode-aware wrappers
 # -----------------------------------------------------------------------------
-ui_msg()      { [ "$UI_MODE" = "tui" ] && tui_msg      "$@" || { local t="$1"; shift; printf '%s%s%s\n\n' "$C_BOLD" "$t" "$C_RESET"; printf '%s\n' "$*"; printf 'Press Enter to continue... '; IFS= read -r _; }; }
+ui_msg() {
+    if [ "$UI_MODE" = "tui" ]; then
+        tui_msg "$@"
+    else
+        local t="$1"; shift
+        printf '%s%s%s\n\n' "$C_BOLD" "$t" "$C_RESET"
+        printf '%s\n' "$*"
+        printf 'Press Enter to continue... '
+        IFS= read -r _
+    fi
+}
 ui_yesno()    { if [ "$UI_MODE" = "tui" ]; then tui_yesno  "$@"; else local t="$1" m="$2" d="${3:-}"; text_yesno "$m" "$d"; fi }
 ui_input()    { if [ "$UI_MODE" = "tui" ]; then tui_input  "$@"; else local t="$1" m="$2" d="${3:-}"; text_input "$m" "$d"; fi }
 ui_password() { if [ "$UI_MODE" = "tui" ]; then tui_password "$@"; else local t="$1" m="$2"; text_password "$m"; fi }
-ui_menu()     { if [ "$UI_MODE" = "tui" ]; then tui_menu "$@"; else local t="$1" m="$2" d="$3"; shift 3; text_choice "$m" "$d" "$@"; fi }
 
 # -----------------------------------------------------------------------------
 # Pre-flight
@@ -669,17 +707,6 @@ UTC
 EOF
 }
 
-list_all_timezones() {
-    if [ -d /usr/share/zoneinfo/posix ]; then
-        find /usr/share/zoneinfo/posix -mindepth 1 -type f -printf '%P\n' | sort
-    elif [ -d /usr/share/zoneinfo ]; then
-        find /usr/share/zoneinfo -mindepth 1 -type f -printf '%P\n' | sort
-    else
-        warn "No zoneinfo directory found; falling back to UTC."
-        echo "UTC"
-    fi
-}
-
 step_timezone() {
     step "Timezone"
     hr
@@ -822,7 +849,7 @@ step_disk() {
     # Confirm destructive action
     if [ "$DISK_MODE" = "erase" ]; then
         if [ "$UI_MODE" = "tui" ]; then
-            tui_yesno "Confirm erase" "ALL DATA on $DISK_TARGET will be destroyed.\n\nProceed?"
+            tui_yesno "Confirm erase" "ALL DATA on $DISK_TARGET will be destroyed.\n\nProceed?" "n"
         else
             text_yesno "ALL DATA on $DISK_TARGET will be destroyed. Proceed?" "n"
         fi
@@ -932,33 +959,41 @@ EOF
 # -----------------------------------------------------------------------------
 partition_erase() {
     local dev="$1"
-    info "Wiping $dev and creating a fresh GPT layout (512 MiB ESP + 4 GiB swap + root)."
+    local arch
+    arch="$(host_arch)"
 
-    # Zero out any existing partition table magic.
     wipefs -af "$dev" >/dev/null 2>&1 || true
     sgdisk --zap-all "$dev" >/dev/null
 
-    # Create partitions (Calamares partition.conf layout, no LUKS):
-    #   1) 512 MiB  EFI System  (type 1, /boot/efi)
-    #   2) 4 GiB    swap        (type 19)
-    #   3) remainder root (/)   (type 20)
-    sgdisk -n1:0:+512M -t1:EF00 -c1:"EFI System" "$dev" >/dev/null
-    sgdisk -n2:0:+4G   -t2:8200 -c2:"swap"        "$dev" >/dev/null
-    sgdisk -n3:0:0    -t3:8300 -c3:"root"         "$dev" >/dev/null
-    partprobe "$dev" >/dev/null 2>&1 || true
-    sleep 1
-    udevadm settle >/dev/null 2>&1 || true
-
-    # Resolve partition names (handles /dev/nvme0n1p1 vs /dev/sda1).
-    if [[ "$dev" =~ (nvme|mmcblk) ]]; then
-        EFI_PART="${dev}p1"
-        SWAP_PART="${dev}p2"
-        ROOT_PART="${dev}p3"
+    if [ "$arch" = "arm64" ]; then
+        info "Wiping $dev and creating GPT layout (512 MiB ESP + 4 GiB swap + root)."
+        sgdisk -n1:0:+512M -t1:EF00 -c1:"EFI System" "$dev" >/dev/null
+        sgdisk -n2:0:+4G   -t2:8200 -c2:"swap"        "$dev" >/dev/null
+        sgdisk -n3:0:0     -t3:8300 -c3:"root"        "$dev" >/dev/null
+        partprobe "$dev" >/dev/null 2>&1 || true
+        sleep 1
+        udevadm settle >/dev/null 2>&1 || true
+        if [[ "$dev" =~ (nvme|mmcblk) ]]; then
+            EFI_PART="${dev}p1"; SWAP_PART="${dev}p2"; ROOT_PART="${dev}p3"
+        else
+            EFI_PART="${dev}1";  SWAP_PART="${dev}2";  ROOT_PART="${dev}3"
+        fi
     else
-        EFI_PART="${dev}1"
-        SWAP_PART="${dev}2"
-        ROOT_PART="${dev}3"
+        info "Wiping $dev and creating hybrid GPT layout (1 MiB BIOS boot + 512 MiB ESP + 4 GiB swap + root)."
+        sgdisk -n1:0:+1M   -t1:EF02 -c1:"BIOS boot"  "$dev" >/dev/null
+        sgdisk -n2:0:+512M -t2:EF00 -c2:"EFI System" "$dev" >/dev/null
+        sgdisk -n3:0:+4G   -t3:8200 -c3:"swap"        "$dev" >/dev/null
+        sgdisk -n4:0:0     -t4:8300 -c4:"root"        "$dev" >/dev/null
+        partprobe "$dev" >/dev/null 2>&1 || true
+        sleep 1
+        udevadm settle >/dev/null 2>&1 || true
+        if [[ "$dev" =~ (nvme|mmcblk) ]]; then
+            EFI_PART="${dev}p2"; SWAP_PART="${dev}p3"; ROOT_PART="${dev}p4"
+        else
+            EFI_PART="${dev}2";  SWAP_PART="${dev}3";  ROOT_PART="${dev}4"
+        fi
     fi
+
     [ -b "$EFI_PART" ]  || die "EFI partition $EFI_PART not found after partitioning."
     [ -b "$SWAP_PART" ] || die "Swap partition $SWAP_PART not found after partitioning."
     [ -b "$ROOT_PART" ] || die "Root partition $ROOT_PART not found after partitioning."
@@ -969,6 +1004,25 @@ partition_erase() {
     mkswap -L swap "$SWAP_PART" >/dev/null
     info "Formatting root ($ROOT_PART) as ext4..."
     mkfs.ext4 -F -L root "$ROOT_PART" >/dev/null
+}
+
+select_partition_from_list() {
+    local role="$1" default_part="$2"; shift 2
+    local -a cands=("$@")
+    if [ "${#cands[@]}" -eq 1 ]; then
+        REPLY="${cands[0]}"
+        return 0
+    fi
+    if [ "$UI_MODE" = "tui" ]; then
+        local args=() p fs
+        for p in "${cands[@]}"; do
+            fs="$(blkid -s TYPE -o value "$p" 2>/dev/null || echo unknown)"
+            args+=("$p" "($fs)")
+        done
+        tui_menu "Select ${role} partition" "Multiple ${role} candidates found:" "$default_part" "${args[@]}"
+    else
+        text_choice "Multiple ${role} partitions found; choose one:" 1 "${cands[@]}"
+    fi
 }
 
 partition_manual() {
@@ -982,40 +1036,41 @@ partition_manual() {
     sleep 1
     udevadm settle >/dev/null 2>&1 || true
 
-    # Heuristically identify the partitions by FS type/label.
-    local parts=()
+    local parts=() efi_cands=() swap_cands=() root_cands=()
     mapfile -t parts < <(lsblk -lnpo NAME,TYPE "$dev" | awk '$2 == "part" { print $1 }')
     [ "${#parts[@]}" -ge 2 ] || die "Expected at least 2 partitions on $dev after manual partitioning."
 
-    EFI_PART=""
-    SWAP_PART=""
-    ROOT_PART=""
+    local p fstype
     for p in "${parts[@]}"; do
-        local fstype
         fstype="$(blkid -s TYPE -o value "$p" 2>/dev/null || true)"
         case "$fstype" in
-            vfat) EFI_PART="$p" ;;
-            swap)  SWAP_PART="$p" ;;
-            ext4|btrfs|xfs) ROOT_PART="$p" ;;
+            vfat)           efi_cands+=("$p") ;;
+            swap)           swap_cands+=("$p") ;;
+            ext4|btrfs|xfs) root_cands+=("$p") ;;
         esac
     done
 
-    # If the user didn't add a swap, prompt for whether to skip or use a swap file.
-    if [ -z "$SWAP_PART" ]; then
-        if [ "$UI_MODE" = "tui" ]; then
-            tui_yesno "Swap" "No swap partition detected. Use a swap file on the root filesystem instead?"
-        else
-            text_yesno "No swap partition detected. Use a swap file on the root filesystem instead?" "n"
-        fi
-        SWAP_FILE_CREATE=$([ "$REPLY" = "y" ] && echo 1 || echo 0)
-    else
-        SWAP_FILE_CREATE=0
+    [ "${#efi_cands[@]}" -ge 1 ]  || die "Could not find an EFI System Partition (vfat) on $dev."
+    [ "${#root_cands[@]}" -ge 1 ] || die "Could not find a root partition (ext4/btrfs/xfs) on $dev."
+
+    select_partition_from_list "EFI" "${efi_cands[0]}" "${efi_cands[@]}"
+    EFI_PART="$REPLY"
+    select_partition_from_list "root" "${root_cands[0]}" "${root_cands[@]}"
+    ROOT_PART="$REPLY"
+
+    SWAP_PART=""
+    if [ "${#swap_cands[@]}" -ge 1 ]; then
+        select_partition_from_list "swap" "${swap_cands[0]}" "${swap_cands[@]}"
+        SWAP_PART="$REPLY"
     fi
 
-    [ -n "$EFI_PART" ]  || die "Could not find an EFI System Partition (vfat) on $dev."
-    [ -n "$ROOT_PART" ] || die "Could not find a root partition (ext4/btrfs/xfs) on $dev."
-    if [ -z "$SWAP_PART" ] && [ "$SWAP_FILE_CREATE" -eq 0 ]; then
-        warn "No swap and no swap file — continuing without swap."
+    if [ -z "$SWAP_PART" ]; then
+        if [ "$UI_MODE" = "tui" ]; then
+            tui_yesno "Swap" "No swap partition detected. Continue without a swap partition?" "y"
+        else
+            text_yesno "No swap partition detected. Continue without a swap partition?" "y"
+        fi
+        [ "$REPLY" = "y" ] || die "Aborted — add a swap partition in cfdisk and re-run."
     fi
 }
 
@@ -1064,8 +1119,13 @@ unpack_target() {
 # Workaround for LP#1829805 (initramfs skipped on first run if /boot/initrd.img-*
 # is missing in the target). Runs inside the chroot.
 chroot_initramfs_touch() {
-    info "Workaround for LP#1829805: touching /boot/initrd.img-$(uname -r)."
-    chroot "$TARGET_ROOT" /bin/bash -c "touch /boot/initrd.img-$(uname -r)"
+    info "Workaround for LP#1829805: touching /boot/initrd.img-* for installed kernels."
+    chroot "$TARGET_ROOT" /bin/bash <<'CHROOT_EOF'
+for k in /boot/vmlinuz-*; do
+    [ -e "$k" ] || continue
+    touch "/boot/initrd.img-${k##*/vmlinuz-}"
+done
+CHROOT_EOF
 }
 
 run_in_chroot() {
@@ -1135,38 +1195,65 @@ EOF
 # passwordRequirements: minLength 8, user.shell=/bin/bash, forbidden=root).
 create_user() {
     info "Creating user $USERNAME with home directory, default groups, and sudoers."
-    run_in_chroot "useradd -m -s /bin/bash -c $(printf %q "$FULLNAME") $USERNAME"
-    run_in_chroot "echo '$USERNAME:$PASSWORD' | chpasswd"
+    chroot "$TARGET_ROOT" useradd -m -s /bin/bash -c "$FULLNAME" "$USERNAME"
+    printf '%s:%s\n' "$USERNAME" "$PASSWORD" | chroot "$TARGET_ROOT" chpasswd
     for g in adm cdrom dip lpadmin plugdev sudo; do
-        run_in_chroot "usermod -aG $g $USERNAME" || true
+        chroot "$TARGET_ROOT" usermod -aG "$g" "$USERNAME" 2>/dev/null || true
     done
-    # Sudoers NOPASSWD is intentionally NOT set — matches Calamares' default
-    # (password is required for sudo).
+    # Set chosen hostname in target /etc/hostname and /etc/hosts.
+    echo "$HOSTNAME" > "$TARGET_ROOT/etc/hostname"
+    cat > "$TARGET_ROOT/etc/hosts" <<EOF
+127.0.0.1 localhost
+127.0.1.1 ${HOSTNAME}
+
+::1 ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+EOF
 }
 
 # Equivalent of calamares 'displaymanager' (autodetect gdm3/lightdm/sddm).
 configure_displaymanager() {
     info "Configuring display manager (autodetect)."
-    chroot "$TARGET_ROOT" /bin/bash -c '
-        set -e
-        for dm in gdm3 lightdm sddm; do
-            if dpkg -s "$dm" >/dev/null 2>&1; then
-                echo "Found DM: $dm — re-enabling."
-                systemctl --root=/ enable "$dm" >/dev/null 2>&1 || true
-            fi
-        done
-    '
+    chroot "$TARGET_ROOT" /bin/bash <<'CHROOT_EOF'
+set -e
+for dm in gdm3 lightdm sddm; do
+    if dpkg -s "$dm" >/dev/null 2>&1; then
+        echo "Found DM: $dm — re-enabling."
+        systemctl --root=/ enable "$dm" >/dev/null 2>&1 || true
+    fi
+done
+CHROOT_EOF
 }
 
 # Equivalent of calamares 'networkcfg' (debian: write /etc/network/interfaces for
 # loopback only — most desktop installs use NetworkManager from the chosen DE).
 configure_network() {
-    info "Writing minimal /etc/network/interfaces (loopback only)."
-    cat > "$TARGET_ROOT/etc/network/interfaces" <<'EOF'
-# Generated by ubuntu-cli-installer — NetworkManager manages the rest.
-auto lo
-iface lo inet loopback
+    info "Configuring target network netplan defaults."
+    mkdir -p "$TARGET_ROOT/etc/netplan"
+    if chroot "$TARGET_ROOT" dpkg -s network-manager >/dev/null 2>&1; then
+        cat > "$TARGET_ROOT/etc/netplan/01-network-manager-all.yaml" <<'EOF'
+network:
+  version: 2
+  renderer: NetworkManager
 EOF
+        chmod 0600 "$TARGET_ROOT/etc/netplan/01-network-manager-all.yaml"
+    else
+        cat > "$TARGET_ROOT/etc/netplan/01-dhcp-all.yaml" <<'EOF'
+network:
+  version: 2
+  ethernets:
+    all-ethernet:
+      match:
+        name: "en*"
+      dhcp4: true
+      dhcp6: true
+EOF
+        chmod 0600 "$TARGET_ROOT/etc/netplan/01-dhcp-all.yaml"
+        chroot "$TARGET_ROOT" systemctl enable systemd-networkd.service >/dev/null 2>&1 || true
+    fi
 }
 
 # Equivalent of calamares 'hwclock' (set UTC hardware clock).
@@ -1178,18 +1265,18 @@ configure_hwclock() {
 # Equivalent of calamares 'initramfscfg' + 'initramfs'.
 configure_initramfs() {
     info "Regenerating initramfs for all installed kernels."
-    chroot "$TARGET_ROOT" /bin/bash -c '
-        set -e
-        if command -v update-initramfs >/dev/null 2>&1; then
-            for img in /boot/vmlinuz-*; do
-                [ -e "$img" ] || continue
-                ver="${img##*/vmlinuz-}"
-                update-initramfs -c -k "$ver" || true
-            done
-        elif command -v dracut >/dev/null 2>&1; then
-            dracut --regenerate-all --force
-        fi
-    '
+    chroot "$TARGET_ROOT" /bin/bash <<'CHROOT_EOF'
+set -e
+if command -v update-initramfs >/dev/null 2>&1; then
+    for img in /boot/vmlinuz-*; do
+        [ -e "$img" ] || continue
+        ver="${img##*/vmlinuz-}"
+        update-initramfs -c -k "$ver" || true
+    done
+elif command -v dracut >/dev/null 2>&1; then
+    dracut --regenerate-all --force
+fi
+CHROOT_EOF
 }
 
 # Equivalent of calamares 'grubcfg' (defaults + GRUB_ENABLE_CRYPTODISK=true).
@@ -1200,35 +1287,37 @@ configure_grubcfg() {
 GRUB_DEFAULT=0
 GRUB_TIMEOUT_STYLE=menu
 GRUB_TIMEOUT=10
-GRUB_DISTRIBUTOR=`lsb_release -i -s 2>/dev/null || echo Ubuntu`
+GRUB_DISTRIBUTOR=`lsb_release -i -s 2>/dev/null || ( . /etc/os-release 2>/dev/null && echo "${NAME:-Ubuntu}" ) || echo Ubuntu`
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
 GRUB_CMDLINE_LINUX=""
 GRUB_ENABLE_CRYPTODISK=true
 EOF
 }
 
-# Equivalent of calamares 'bootloader' (grub-install, target=x86_64-efi + i386-pc).
+# Equivalent of calamares 'bootloader' (UEFI + legacy BIOS on amd64; UEFI-only on arm64).
 install_bootloader() {
-    info "Installing GRUB to $DISK_TARGET (UEFI + legacy BIOS for hybrid)."
+    local arch boot_id efi_target
+    arch="$(target_arch)"
+    boot_id="$(target_bootloader_id)"
+    efi_target="x86_64-efi"
+    [ "$arch" = "arm64" ] && efi_target="arm64-efi"
 
-    if [ -d /sys/firmware/efi ]; then
+    info "Installing GRUB to $DISK_TARGET (arch=$arch, bootloader-id=$boot_id)."
+
+    if [ -d /sys/firmware/efi ] || [ "$arch" = "arm64" ]; then
         chroot "$TARGET_ROOT" /bin/bash -c "
             set -e
-            grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --recheck
-        "
-    else
-        chroot "$TARGET_ROOT" /bin/bash -c "
-            set -e
-            grub-install --target=i386-pc $DISK_TARGET
+            grub-install --target=${efi_target} --efi-directory=/boot/efi --bootloader-id=${boot_id} --recheck
+            grub-install --target=${efi_target} --efi-directory=/boot/efi --bootloader-id=${boot_id} --removable --recheck
         "
     fi
 
-    # Install for the other target as well if the disk is GPT (hybrid) — matches
-    # the hybrid UEFI+BIOS boot of the live ISO.
-    if [ -d /sys/firmware/efi ] && command -v grub-install >/dev/null 2>&1; then
-        chroot "$TARGET_ROOT" /bin/bash -c "
-            grub-install --target=i386-pc $DISK_TARGET
-        " 2>/dev/null || true
+    if [ "$arch" = "amd64" ]; then
+        if [ -d /sys/firmware/efi ]; then
+            chroot "$TARGET_ROOT" grub-install --target=i386-pc "$DISK_TARGET" 2>/dev/null || true
+        else
+            chroot "$TARGET_ROOT" grub-install --target=i386-pc "$DISK_TARGET"
+        fi
     fi
 
     run_in_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
@@ -1238,25 +1327,29 @@ install_bootloader() {
 # language packs for the chosen locale).
 strip_live_packages() {
     info "Removing live-only packages from the target."
-    chroot "$TARGET_ROOT" /bin/bash -c '
-        set -e
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get -y purge \
-            calamares \
-            casper \
-            cifs-utils \
-            discover \
-            laptop-detect \
-            os-prober 2>/dev/null || true
-        apt-get -y autoremove --purge || true
-    '
+    chroot "$TARGET_ROOT" /bin/bash <<'CHROOT_EOF'
+set -e
+export DEBIAN_FRONTEND=noninteractive
+to_purge=()
+for p in calamares casper cifs-utils discover laptop-detect os-prober; do
+    if dpkg -s "$p" >/dev/null 2>&1; then
+        to_purge+=("$p")
+    fi
+done
+if [ "${#to_purge[@]}" -gt 0 ]; then
+    apt-get -y purge "${to_purge[@]}" || true
+fi
+apt-get -y autoremove --purge || true
+CHROOT_EOF
     info "Installing language packs for $LOCALE (best-effort, online only)."
-    local short="${LOCALE%.*}"     # en_US.UTF-8 → en_US
-    local lang="${short%_*}"       # en_US → en
+    local short="${LOCALE%.*}"           # en_US.UTF-8 -> en_US
+    local lang="${short%_*}"             # en_US -> en
+    local hunspell_tag="${short,,}"
+    hunspell_tag="${hunspell_tag//_/-}"  # en_US -> en-us
     chroot "$TARGET_ROOT" /bin/bash -c "
         set -e
         export DEBIAN_FRONTEND=noninteractive
-        for pkg in language-pack-$short hunspell-$short libreoffice-help-$short libreoffice-l10n-$short; do
+        for pkg in language-pack-${lang} hunspell-${hunspell_tag} libreoffice-help-${lang} libreoffice-l10n-${lang}; do
             apt-get install -y --no-install-recommends \"\$pkg\" 2>/dev/null || true
         done
     " || true

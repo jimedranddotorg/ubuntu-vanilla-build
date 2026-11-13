@@ -1,82 +1,38 @@
-# Ubuntu CLI Installer
+# Ubuntu / Pop!_OS CLI Installer
 
-A TTY-friendly, Calamares-equivalent installer for the **Ubuntu Vanilla Build**
-live ISO. It walks the user through the same stages as
-[scripts/calamares/settings.conf](../calamares/settings.conf) (welcome →
-locale → keyboard → partition → users → summary → mount → unpackfs →
-machineid → fstab → locale → keyboard → users → displaymanager →
-networkcfg → hwclock → initramfs → grubcfg → bootloader → packages → umount
-→ finished) but entirely from a shell.
+A self-contained Bash installer (`scripts/cli-installer/install-system`) that mirrors the Calamares module sequence (`scripts/calamares/settings.conf`) from a terminal.
 
-## Why
+Every ISO built by `scripts/build.sh` and `scripts/build-popos.sh` installs this script at `/usr/local/bin/install-system`.
 
-* Boots a desktop ISO into a TTY (or a CLI-only ISO) and installs the system
-  from the live environment — useful on machines without a working display
-  server or for fully scripted headless installs.
-* The Calamares-based ISO already works on desktops; this script is a
-  *companion* path for the same ISO that runs entirely from a shell.
+## Usage on a Live ISO
 
-## Usage
-
-The script is a single self-contained bash file
-([`install-system`](install-system)). To use it on the live system,
-**make it executable first**, then **copy it into the system** (e.g.
-`/usr/local/bin/`), then **run it**:
+Run from a TTY or terminal on the booted live media:
 
 ```bash
-# 1. Make it executable FIRST (a fresh checkout from the repo is not
-#    always +x):
-chmod +x install-system
-
-# 2. Copy the script into the system — install(1) sets mode 0755 in one step:
-sudo install -m 0755 install-system /usr/local/bin/
-
-# 3. Run it as a normal system command:
 sudo install-system
 ```
 
-If you are iterating on the script and only need it on the live system
-temporarily, you can skip step 2 and run it in place:
+To test a newer copy directly from a checkout:
 
 ```bash
-chmod +x install-system
-sudo ./install-system
+chmod +x scripts/cli-installer/install-system
+sudo ./scripts/cli-installer/install-system
 ```
 
-The script is **strictly interactive** by design — every step asks the user
-on the TTY.
+At startup, choose between `whiptail`/`dialog` TUI boxes or plain text prompts.
 
-### UI mode
+## What It Configures
 
-At the welcome screen the user is asked which interface to use:
+- **Locale & keyboard**: curated UTF-8 list synced with `scripts/calamares/i18n/SUPPORTED` and XKB layout configuration.
+- **Timezone**: tries NTP via `timedatectl` when online, falls back offline.
+- **Partitioning**:
+  - *Erase disk*: GPT with 1 MiB `bios_grub` (`amd64` only) + 512 MiB FAT32 ESP + 4 GiB swap + ext4 root.
+  - *Manual*: runs `cfdisk` and asks which partition to use if multiple candidates match.
+- **Bootloader**: detects `amd64` vs `arm64` and Ubuntu (`--bootloader-id=ubuntu`) vs Pop!_OS (`--bootloader-id=pop`). Installs both UEFI (`x86_64-efi` / `arm64-efi`) and legacy BIOS (`i386-pc` on `amd64`).
+- **Network**: writes Netplan config for NetworkManager if installed, or `systemd-networkd` DHCP otherwise.
+- **Cleanup**: purges live-only packages (`calamares`, `casper`, etc.) when present and attempts online installation of locale language packs.
 
-1. **TUI (whiptail/dialog boxes)** — recommended, falls back to plain text
-   if neither `whiptail` nor `dialog` is installed.
-2. **Plain text prompts** — pure `read` based, works in any TTY, zero
-   extra dependencies.
+## Scope Limits
 
-### What it covers
-
-| Step | Source of truth in Calamares |
-| --- | --- |
-| Locale | `calamares/i18n/SUPPORTED` (curated UTF-8 list) |
-| Timezone | `calamares/modules/locale.conf` (`useSystemTimezone`, no GeoIP) |
-| Disk | `calamares/modules/partition.conf` (GPT, 512 MiB ESP, 4 GiB swap, root fills rest) |
-| User | `calamares/modules/users.conf` (sudo group, /bin/bash, minLength 8) |
-| Initramfs | `calamares/modules/shellprocess_bug-LP#1829805.conf` |
-| Bootloader | `calamares/modules/bootloader.conf` + `grubcfg.conf` (GRUB_ENABLE_CRYPTODISK) |
-| Packages | `calamares/modules/packages.conf` (remove `calamares`/`casper`/…, try-install language packs) |
-
-### What it does **not** cover
-
-* **LUKS full-disk encryption** — Calamares offers it; this CLI installer
-  intentionally does not (manual cfdisk users can still set it up by hand).
-* **Unattended / non-interactive mode** — by design, every step is
-  answered on the TTY.
-* **GeoIP** — the ISO has none (see `locale.conf`); users pick manually.
-
-## Files
-
-* `install-system` — the installer (one self-contained bash script).
-* `my plan to create the installer.txt` — the original design notes.
-* `README.md` — this file.
+- **No LUKS encryption**: use Calamares on desktop ISOs if you need automated LUKS2 full-disk encryption.
+- **No GeoIP / unattended mode**: every step asks on the TTY.

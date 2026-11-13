@@ -9,8 +9,8 @@ windowSize:            800px,520px
 strings:
     productName:         Ubuntu
     shortProductName:    Ubuntu
-    version:             @VERSION@
-    shortVersion:        @CODENAME@
+    version:             "@VERSION@"
+    shortVersion:        "@CODENAME@"
     versionedName:       Ubuntu @VERSION@ LTS
     shortVersionedName:  Ubuntu @VERSION@ LTS
     bootloaderEntryName: Ubuntu

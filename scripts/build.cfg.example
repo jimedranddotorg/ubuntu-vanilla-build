@@ -1,78 +1,70 @@
-# Ubuntu Vanilla ISO Builder - Example Configuration File
-# ========================================================
+# Example build configuration (Advanced Mode)
 #
-# NOTE: Config files are an ADVANCED MODE feature. You must use --advanced
-# (or pick Advanced at the startup mode prompt) for config files to be loaded.
-# In basic mode (default), the build uses interactive prompts and sensible
-# defaults instead.
+# Config files are loaded only in Advanced Mode (--advanced or ADVANCED_MODE=1).
+# Copy this file to build.cfg (or build-popos.cfg, build-img.cfg, etc.) in
+# scripts/, or pass --advanced --config=/path/to/file.cfg.
+# You can also generate a file interactively with --generate-config.
 #
-# Copy this file to "build.cfg" (in the scripts/ directory) for automatic loading
-# in advanced mode, or use --advanced --config=/path/to/your-config.cfg.
-#
-# You can also generate this file interactively with:
-#   ./build.sh --generate-config
-#
-# CLI arguments always override values from this file.
-# Lines starting with # are comments. Inline comments are supported when the
-# "#" is preceded by whitespace (values themselves may contain "#").
-#
-# Usage:
-#   cp build.cfg.example build.cfg
-#   # Edit values below, then:
-#   ./build.sh --advanced -
-#   # Or explicitly:
-#   ./build.sh --advanced --config=build.cfg -
+# Precedence: CLI flags > config file > environment > prompts > defaults.
 
-# --- Core Build Settings ---
-# TARGET_UBUNTU_VERSION=noble          # jammy | noble | resolute
-# TARGET_UBUNTU_MIRROR=https://archive.ubuntu.com/ubuntu/
-# TARGET_KERNEL_FLAVOR=generic         # generic | lowlatency
-# TARGET_INSTALLER=calamares           # calamares | ubiquity (ubiquity: jammy only)
-# TARGET_DESKTOP=gnome                 # gnome | xfce | lxde | lxqt | mate | cinnamon | budgie | kde-plasma
+# --- Core ---
+# TARGET_UBUNTU_VERSION=noble          # noble | resolute | devel (Ubuntu only; Pop!_OS: noble | resolute)
+# TARGET_ARCH=amd64                    # amd64 | arm64
+# TARGET_IMAGE_PROFILE=desktop         # desktop | cli
+# TARGET_UBUNTU_MIRROR=                # Optional override (defaults to archive/ports/pop-os by distro & arch)
+# TARGET_KERNEL_FLAVOR=generic         # Ubuntu: generic | lowlatency ; Pop!_OS: system76 | generic | lowlatency
+# TARGET_KERNEL_PACKAGE=               # Optional explicit kernel metapackage override
+# TARGET_DESKTOP=gnome                 # cli | gnome | xfce | lxde | lxqt | mate | cinnamon | budgie | kde-plasma
+# TARGET_NETWORK_STACK=network-manager # networkd | network-manager (CLI profile; desktop always uses NetworkManager)
 
-# --- Desktop-Specific ---
+# --- Desktop Options ---
+# TARGET_GNOME_INSTALL_RECOMMENDS=0    # 0 | 1
 # TARGET_KDE_PACKAGE=kde-standard      # kde-full | kde-standard | kde-plasma-desktop
 # TARGET_MATE_PACKAGE=mate-desktop-environment  # mate-desktop-environment | mate-desktop-environment-core
 # TARGET_MATE_EXTRAS=0                 # 0 | 1
-# TARGET_GNOME_INSTALL_RECOMMENDS=0    # 0 | 1
 
-# --- Browser Options ---
+# --- Browsers (Desktop profile only) ---
 # TARGET_BRAVE_CHANNEL=release         # none | release | origin
 # TARGET_LIBREWOLF=0                   # 0 | 1
 # TARGET_FIREFOX=0                     # 0 | 1
 # TARGET_FIREFOX_ESR=0                 # 0 | 1
-# TARGET_FIREFOX_POPOS=0               # 0 | 1 (build-popos.sh only: native Firefox deb from the Pop!_OS repo, not a snap stub)
+# TARGET_FIREFOX_POPOS=0               # 0 | 1 (Pop!_OS builders only)
 # TARGET_THUNDERBIRD=0                 # 0 | 1
 
-# --- Package Managers ---
-# TARGET_PACSTALL=1                    # 0 | 1 (install Pacstall; default: yes)
+# --- Package Manager & Extras ---
+# TARGET_PACSTALL=1                    # 0 | 1 (installed via Chaotic PPR repo)
+# TARGET_UBUNTU_STUDIO=0               # 0 | 1 (desktop only)
+# TARGET_SYSTEM76_DRIVER=0             # 0 | 1 (Pop!_OS builders only)
+# TARGET_FWUPD=0                       # 0 | 1
+# TARGET_OPENSSH_SERVER=0              # 0 | 1 (defaults to 1 on cloud images)
+# TARGET_COCKPIT=0                     # 0 | 1
 
-# --- Optional Extras ---
-# TARGET_UBUNTU_STUDIO=0              # 0 | 1
-# TARGET_SYSTEM76_DRIVER=0            # 0 | 1 (build-popos.sh only: system76-driver for System76 hardware)
+# --- Disk Image Options (build-img / build-vm / build-removable & Pop!_OS equivalents) ---
+# TARGET_FIRMWARE=uefi                 # uefi | hybrid (arm64 is uefi-only; removable defaults to hybrid on amd64)
+# TARGET_DISK_SIZE_GB=32               # default 32 (min 10) for cloud/vm; default 16 (min 8) for removable
+# TARGET_IMG_ALLOC=truncate            # truncate | fallocate | dd
+# TARGET_USER_MODE=deploy              # build | deploy
+# TARGET_USERNAME=                     # Required when TARGET_USER_MODE=build (non-interactive)
+# TARGET_USER_PASSWORD=                # Required when TARGET_USER_MODE=build (non-interactive)
+# TARGET_USER_FULLNAME=                # Optional GECOS
+# TARGET_HOSTNAME=                     # Optional hostname
+# TARGET_VM_FORMATS=qcow2              # qcow2,vdi,vmdk,vhdx | all | none (VM builders only)
 
-# --- Optional Services & Tools ---
-# TARGET_FWUPD=0                      # 0 | 1 (pre-install fwupd; it is blocked during the build either way and can always be apt-installed later)
-# TARGET_OPENSSH_SERVER=0             # 0 | 1 (pre-install openssh-server)
-# TARGET_COCKPIT=0                    # 0 | 1 (pre-install Cockpit from the ${release}-backports pocket for the latest version)
-
-# --- Locale & Keyboard (for unattended builds) ---
-# TARGET_LOCALE=en_US.UTF-8           # e.g. en_US.UTF-8, de_DE.UTF-8, fr_FR.UTF-8
-# TARGET_KEYBOARD_LAYOUT=us           # e.g. us, de, fr, gb
-# TARGET_KEYBOARD_VARIANT=            # e.g. intl, nodeadkeys (optional)
-
-# --- Output & Workspace ---
-# TARGET_NAME=                         # Custom ISO base name (auto-generated if empty)
+# --- ISO Options (build.sh / build-popos.sh) ---
+# TARGET_INSTALLER=calamares           # calamares (desktop) or cli (when TARGET_IMAGE_PROFILE=cli)
 # GRUB_LIVEBOOT_LABEL=Try Ubuntu without installing
-# UBUNTU_VANILLA_WORKSPACE=            # Custom workspace parent directory (default: /var/cache/ubuntu-vanilla-build in basic mode, ~/uvb-workspace in advanced mode)
-# UVB_OUTPUT_DIR=                      # Directory for the finished ISO + checksums (default: your home directory)
 
-# --- Advanced Mode ---
-# ADVANCED_MODE=0                      # Set to 1 to preserve workspace on failure/interrupt and enable package cache
+# --- Locale & Keyboard (Unattended) ---
+# TARGET_LOCALE=en_US.UTF-8
+# TARGET_KEYBOARD_LAYOUT=us
+# TARGET_KEYBOARD_VARIANT=
 
-# --- Hooks ---
+# --- Output, UI & Advanced Behavior ---
+# TARGET_NAME=                         # Custom filename base (auto-generated with UTC timestamp if empty)
+# UBUNTU_VANILLA_WORKSPACE=            # Custom workspace parent directory
+# UVB_OUTPUT_DIR=                      # Output directory (default: ~)
+# UVB_UI_MODE=cli                      # cli | tui
+# ADVANCED_MODE=1                      # 0 | 1
 # HOOKS_DIR=                           # Custom hooks directory (default: scripts/hooks/)
-
-# --- Interactive Mode ---
-# INTERACTIVE=0                        # Set to 0 to disable all interactive prompts
-# NO_CONFIRM=1                         # Set to 1 to skip the pre-build confirmation prompt
+# INTERACTIVE=0                        # 0 | 1
+# NO_CONFIRM=1                         # 0 | 1

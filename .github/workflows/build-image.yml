@@ -1,0 +1,372 @@
+name: Build Ubuntu / Pop!_OS Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      distro:
+        description: "Target distribution"
+        type: choice
+        options:
+          - ubuntu
+          - popos
+        default: ubuntu
+      output:
+        description: "Output image artifact type"
+        type: choice
+        options:
+          - iso
+          - img
+          - vm
+          - removable
+        default: iso
+      release:
+        description: "Target suite (Pop!_OS supports noble & resolute only)"
+        type: choice
+        options:
+          - noble
+          - resolute
+          - devel
+        default: noble
+      arch:
+        description: "Target CPU architecture (native runner per arch)"
+        type: choice
+        options:
+          - amd64
+          - arm64
+        default: amd64
+      profile:
+        description: "System profile"
+        type: choice
+        options:
+          - desktop
+          - cli
+        default: desktop
+      desktop:
+        description: "Desktop environment (desktop profile only)"
+        type: choice
+        options:
+          - gnome
+          - xfce
+          - kde-plasma
+          - mate
+          - cinnamon
+          - budgie
+          - lxde
+          - lxqt
+        default: gnome
+      kernel:
+        description: "Kernel flavor (system76 is Pop!_OS amd64 only)"
+        type: choice
+        options:
+          - generic
+          - lowlatency
+          - system76
+        default: generic
+      kde_package:
+        description: "KDE metapackage tier (when desktop = kde-plasma)"
+        type: choice
+        options:
+          - kde-standard
+          - kde-plasma-desktop
+          - kde-full
+        default: kde-standard
+      gnome_recommends:
+        description: "Include APT recommends for vanilla-gnome-desktop"
+        type: boolean
+        default: false
+      brave_channel:
+        description: "Brave browser channel (desktop profile)"
+        type: choice
+        options:
+          - release
+          - origin
+          - none
+        default: release
+      firefox_variant:
+        description: "Firefox variant (firefox-popos is Pop!_OS only)"
+        type: choice
+        options:
+          - none
+          - firefox
+          - firefox-esr
+          - firefox-popos
+        default: none
+      librewolf:
+        description: "Pre-install LibreWolf (desktop profile)"
+        type: boolean
+        default: false
+      thunderbird:
+        description: "Pre-install Thunderbird (desktop profile)"
+        type: boolean
+        default: false
+      pacstall:
+        description: "Install Pacstall via Chaotic PPR"
+        type: boolean
+        default: true
+      openssh_server:
+        description: "OpenSSH server (auto enables on cloud img)"
+        type: choice
+        options:
+          - auto
+          - enable
+          - disable
+        default: auto
+      firmware:
+        description: "Disk image firmware (auto = hybrid for amd64 removable, else uefi)"
+        type: choice
+        options:
+          - auto
+          - uefi
+          - hybrid
+        default: auto
+      disk_size_gb:
+        description: "Disk image size in GB (blank = 32 GB cloud/vm, 16 GB removable)"
+        type: string
+        default: ""
+      vm_formats:
+        description: "VM export formats (when output = vm)"
+        type: choice
+        options:
+          - qcow2
+          - all
+          - vdi
+          - vmdk
+          - vhdx
+          - none
+        default: qcow2
+      network_stack:
+        description: "CLI profile network stack (auto = networkd for cli)"
+        type: choice
+        options:
+          - auto
+          - networkd
+          - network-manager
+        default: auto
+      locale:
+        description: "System locale (e.g. en_US.UTF-8)"
+        type: string
+        default: en_US.UTF-8
+      keyboard_layout:
+        description: "Keyboard layout code (e.g. us, de)"
+        type: string
+        default: us
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ inputs.distro }}-${{ inputs.output }}-${{ inputs.release }}-${{ inputs.arch }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ inputs.distro }}-${{ inputs.output }} (${{ inputs.release }}/${{ inputs.arch }})
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 360
+    env:
+      IN_DISTRO: ${{ inputs.distro }}
+      IN_OUTPUT: ${{ inputs.output }}
+      IN_RELEASE: ${{ inputs.release }}
+      IN_ARCH: ${{ inputs.arch }}
+      IN_PROFILE: ${{ inputs.profile }}
+      IN_DESKTOP: ${{ inputs.desktop }}
+      IN_KERNEL: ${{ inputs.kernel }}
+      IN_KDE_PACKAGE: ${{ inputs.kde_package }}
+      IN_GNOME_RECOMMENDS: ${{ inputs.gnome_recommends }}
+      IN_BRAVE_CHANNEL: ${{ inputs.brave_channel }}
+      IN_FIREFOX_VARIANT: ${{ inputs.firefox_variant }}
+      IN_LIBREWOLF: ${{ inputs.librewolf }}
+      IN_THUNDERBIRD: ${{ inputs.thunderbird }}
+      IN_PACSTALL: ${{ inputs.pacstall }}
+      IN_OPENSSH_SERVER: ${{ inputs.openssh_server }}
+      IN_FIRMWARE: ${{ inputs.firmware }}
+      IN_DISK_SIZE_GB: ${{ inputs.disk_size_gb }}
+      IN_VM_FORMATS: ${{ inputs.vm_formats }}
+      IN_NETWORK_STACK: ${{ inputs.network_stack }}
+      IN_LOCALE: ${{ inputs.locale }}
+      IN_KEYBOARD_LAYOUT: ${{ inputs.keyboard_layout }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate workflow input combinations
+        run: |
+          set -euo pipefail
+          if [[ "$IN_DISTRO" == "popos" && "$IN_RELEASE" == "devel" ]]; then
+            echo "::error::Pop!_OS does not support the 'devel' suite. Choose 'noble' or 'resolute'."
+            exit 1
+          fi
+          if [[ "$IN_KERNEL" == "system76" && "$IN_DISTRO" != "popos" ]]; then
+            echo "::error::Kernel 'system76' is only available for Pop!_OS builds."
+            exit 1
+          fi
+          if [[ "$IN_KERNEL" == "system76" && "$IN_ARCH" == "arm64" ]]; then
+            echo "::error::linux-system76 is only published for amd64; choose 'generic' or 'lowlatency' on arm64."
+            exit 1
+          fi
+          if [[ "$IN_FIREFOX_VARIANT" == "firefox-popos" && "$IN_DISTRO" != "popos" ]]; then
+            echo "::error::'firefox-popos' is only available for Pop!_OS builds."
+            exit 1
+          fi
+          if [[ "$IN_ARCH" == "arm64" && "$IN_OUTPUT" != "iso" && "$IN_FIRMWARE" == "hybrid" ]]; then
+            echo "::error::ARM64 disk images only support UEFI firmware (set firmware to 'auto' or 'uefi')."
+            exit 1
+          fi
+          if [[ -n "$IN_DISK_SIZE_GB" && ! "$IN_DISK_SIZE_GB" =~ ^[0-9]+$ ]]; then
+            echo "::error::disk_size_gb must be an integer (got: '$IN_DISK_SIZE_GB')."
+            exit 1
+          fi
+          if [[ -n "$IN_LOCALE" && ! "$IN_LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
+            echo "::error::Invalid locale format: '$IN_LOCALE'."
+            exit 1
+          fi
+          if [[ -n "$IN_KEYBOARD_LAYOUT" && ! "$IN_KEYBOARD_LAYOUT" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            echo "::error::Invalid keyboard layout code: '$IN_KEYBOARD_LAYOUT'."
+            exit 1
+          fi
+
+      - name: Prepare runner disk space and directories
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          ws_base="${RUNNER_TEMP}/uvb-ws"
+          out_base="${RUNNER_TEMP}/uvb-out"
+          if [[ -d /mnt && -w /mnt ]]; then
+            mnt_avail="$(df -Pm /mnt | awk 'NR==2 {print $4}')"
+            tmp_avail="$(df -Pm "${RUNNER_TEMP}" | awk 'NR==2 {print $4}')"
+            if [[ "$mnt_avail" =~ ^[0-9]+$ && "$tmp_avail" =~ ^[0-9]+$ ]] && (( mnt_avail > tmp_avail )); then
+              ws_base="/mnt/uvb-ws"
+              out_base="/mnt/uvb-out"
+            fi
+          fi
+          mkdir -p "$ws_base" "$out_base"
+          echo "UVB_WS_BASE=${ws_base}" >> "$GITHUB_ENV"
+          echo "UVB_OUT_BASE=${out_base}" >> "$GITHUB_ENV"
+          df -h "$ws_base"
+
+      - name: Install host build dependencies
+        run: |
+          set -euo pipefail
+          pkgs=(debootstrap zstd)
+          case "$IN_OUTPUT" in
+            iso)           pkgs+=(squashfs-tools xorriso) ;;
+            img|removable) pkgs+=(parted dosfstools e2fsprogs rsync) ;;
+            vm)            pkgs+=(parted dosfstools e2fsprogs rsync qemu-utils) ;;
+          esac
+          sudo apt-get update
+          sudo apt-get install -y "${pkgs[@]}"
+
+      - name: Build image
+        run: |
+          set -euo pipefail
+          case "${IN_DISTRO}-${IN_OUTPUT}" in
+            ubuntu-iso)       builder="./scripts/build.sh" ;;
+            ubuntu-img)       builder="./scripts/build-img.sh" ;;
+            ubuntu-vm)        builder="./scripts/build-vm.sh" ;;
+            ubuntu-removable) builder="./scripts/build-removable.sh" ;;
+            popos-iso)        builder="./scripts/build-popos.sh" ;;
+            popos-img)        builder="./scripts/build-popos-img.sh" ;;
+            popos-vm)         builder="./scripts/build-popos-vm.sh" ;;
+            popos-removable)  builder="./scripts/build-popos-removable.sh" ;;
+            *) echo "::error::Unsupported target ${IN_DISTRO}-${IN_OUTPUT}"; exit 1 ;;
+          esac
+
+          args=(
+            --advanced
+            --no-interactive
+            --no-color
+            --no-screen
+            "--release=${IN_RELEASE}"
+            "--arch=${IN_ARCH}"
+            "--profile=${IN_PROFILE}"
+            "--kernel=${IN_KERNEL}"
+          )
+
+          if [[ "$IN_PROFILE" == "desktop" ]]; then
+            args+=("--desktop=${IN_DESKTOP}" "--brave=${IN_BRAVE_CHANNEL}")
+            if [[ "$IN_DESKTOP" == "kde-plasma" ]]; then
+              args+=("--kde=${IN_KDE_PACKAGE}")
+            fi
+            if [[ "$IN_DESKTOP" == "gnome" && "$IN_GNOME_RECOMMENDS" == "true" ]]; then
+              export TARGET_GNOME_INSTALL_RECOMMENDS=1
+            fi
+            case "$IN_FIREFOX_VARIANT" in
+              firefox)       args+=(--firefox) ;;
+              firefox-esr)   args+=(--firefox-esr) ;;
+              firefox-popos) args+=(--firefox-popos) ;;
+            esac
+            [[ "$IN_LIBREWOLF" == "true" ]] && args+=(--librewolf) || args+=(--no-librewolf)
+            [[ "$IN_THUNDERBIRD" == "true" ]] && args+=(--thunderbird) || args+=(--no-thunderbird)
+          else
+            if [[ "$IN_NETWORK_STACK" != "auto" ]]; then
+              args+=("--network=${IN_NETWORK_STACK}")
+            fi
+          fi
+
+          [[ "$IN_PACSTALL" == "true" ]] && args+=(--pacstall) || args+=(--no-pacstall)
+          case "$IN_OPENSSH_SERVER" in
+            enable)  args+=(--openssh-server) ;;
+            disable) args+=(--no-openssh-server) ;;
+          esac
+
+          if [[ "$IN_OUTPUT" != "iso" ]]; then
+            [[ "$IN_FIRMWARE" != "auto" ]] && args+=("--firmware=${IN_FIRMWARE}")
+            [[ -n "$IN_DISK_SIZE_GB" ]] && args+=("--disk-size=${IN_DISK_SIZE_GB}")
+            [[ "$IN_OUTPUT" == "vm" ]] && args+=("--formats=${IN_VM_FORMATS}")
+          fi
+
+          [[ -n "$IN_LOCALE" ]] && args+=("--locale=${IN_LOCALE}")
+          [[ -n "$IN_KEYBOARD_LAYOUT" ]] && args+=("--keyboard-layout=${IN_KEYBOARD_LAYOUT}")
+
+          export UBUNTU_VANILLA_WORKSPACE="$UVB_WS_BASE"
+          export UVB_OUTPUT_DIR="$UVB_OUT_BASE"
+          "$builder" "${args[@]}" -
+
+      - name: Verify checksums and prepare artifacts
+        run: |
+          set -euo pipefail
+          cd "$UVB_OUT_BASE"
+          shopt -s nullglob
+
+          for sum_file in *.sha256; do
+            sha256sum -c "$sum_file"
+          done
+
+          # Compress raw .img artifacts with zstd so GitHub Actions artifact upload stays compact.
+          for img in *.img; do
+            if [[ "$IN_OUTPUT" == "vm" && "$IN_VM_FORMATS" != "none" ]]; then
+              rm -f -- "$img" "${img}.sha1" "${img}.sha256"
+            else
+              zstd -T0 --rm -q "$img"
+              rm -f -- "${img}.sha1" "${img}.sha256"
+              sha256sum "${img}.zst" > "${img}.zst.sha256"
+            fi
+          done
+
+          {
+            echo "## Build Summary"
+            echo ""
+            echo "- **Target**: \`${IN_DISTRO} / ${IN_OUTPUT}\`"
+            echo "- **Release / Arch**: \`${IN_RELEASE} / ${IN_ARCH}\`"
+            echo "- **Profile / Kernel**: \`${IN_PROFILE} (${IN_DESKTOP}) / ${IN_KERNEL}\`"
+            echo ""
+            echo "### Artifacts"
+            ls -lh
+            echo ""
+            echo "### SHA-256 Checksums"
+            echo '```text'
+            cat *.sha256
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.distro }}-${{ inputs.output }}-${{ inputs.release }}-${{ inputs.arch }}-${{ inputs.profile }}
+          path: ${{ env.UVB_OUT_BASE }}/*
+          if-no-files-found: error
+          retention-days: 14

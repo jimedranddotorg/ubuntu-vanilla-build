@@ -1,0 +1,124 @@
+name: Shell Lint and CLI Smoke Tests
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "start-here.sh"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/build-image.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "start-here.sh"
+      - "scripts/**"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/build-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same branch/PR to preserve GitHub Actions Free tier minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Syntax check (bash -n)
+        run: |
+          bash -n start-here.sh scripts/lib/*.sh scripts/build*.sh scripts/cli-installer/install-system
+
+      - name: Static analysis (shellcheck)
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y shellcheck
+          fi
+          shellcheck -x -P scripts start-here.sh scripts/build*.sh scripts/cli-installer/install-system
+          shellcheck -s bash -e SC2034 -x -P scripts/lib scripts/lib/*.sh
+
+      - name: YAML, Calamares parity, and config allowlist checks
+        run: |
+          python3 - <<'PY'
+          import re, yaml
+          from pathlib import Path
+
+          for wf in sorted(Path(".github/workflows").glob("*.yml")):
+              data = yaml.safe_load(wf.read_text(encoding="utf-8"))
+              assert isinstance(data, dict) and "jobs" in data, f"Invalid workflow: {wf}"
+
+          for base_name, brand in [("calamares", "ubuntu"), ("calamares-popos", "pop")]:
+              base = Path("scripts") / base_name
+              s = yaml.safe_load((base / "settings.conf").read_text(encoding="utf-8"))
+              assert s.get("branding") == brand
+              for inst in s.get("instances", []):
+                  assert (base / "modules" / inst["config"]).exists()
+              for conf in sorted((base / "modules").glob("*.conf")):
+                  txt = conf.read_text(encoding="utf-8")
+                  yaml.safe_load(txt)
+                  non_comment = "\n".join(l for l in txt.splitlines() if not l.lstrip().startswith("#"))
+                  assert "ubiquity" not in non_comment.lower(), f"ubiquity in {conf}"
+              bd = (base / "branding" / brand / "branding.desc").read_text(encoding="utf-8")
+              raw = yaml.safe_load(bd)
+              assert "@VERSION@" in raw["strings"]["version"] and "@CODENAME@" in raw["strings"]["shortVersion"]
+
+          def noncomment(p):
+              return [l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip() and not l.lstrip().startswith("#")]
+
+          cal_u = noncomment(Path("scripts/calamares/i18n/SUPPORTED"))
+          cal_p = noncomment(Path("scripts/calamares-popos/i18n/SUPPORTED"))
+          assert cal_u == cal_p
+          m = re.search(r'SUPPORTED_LOCALES="(.*?)"', Path("scripts/cli-installer/install-system").read_text(encoding="utf-8"), re.S)
+          assert [l.strip() for l in m.group(1).splitlines() if l.strip()] == cal_u
+
+          common_txt = Path("scripts/lib/common.sh").read_text(encoding="utf-8")
+          m_allow = re.search(r'case "\$key" in\s*(.*?)\n\s*;;', common_txt, re.S)
+          allow = set(re.findall(r'[A-Z_][A-Z0-9_]*', m_allow.group(1)))
+          cfg_keys = set(re.findall(r'^#\s*([A-Z_][A-Z0-9_]*)=', Path("scripts/build.cfg.example").read_text(encoding="utf-8"), re.M))
+          assert not (cfg_keys - allow), f"Missing allowlist keys: {sorted(cfg_keys - allow)}"
+          print("YAML_PARITY_OK")
+          PY
+
+      - name: Help & validation smoke tests
+        run: |
+          ./start-here.sh --help >/dev/null
+          for s in scripts/build*.sh; do
+            "$s" --help >/dev/null
+          done
+
+          # Deprecated jammy/ubiquity must fail with exit != 0.
+          ! ./scripts/build.sh --advanced --no-interactive --release=jammy --kernel=generic - >/dev/null 2>&1
+          ! ./scripts/build.sh --advanced --no-interactive --release=noble --installer=ubiquity --kernel=generic - >/dev/null 2>&1
+
+          # Pop!_OS rejects devel and rejects system76 kernel on arm64.
+          ! ./scripts/build-popos.sh --advanced --no-interactive --release=devel --kernel=generic - >/dev/null 2>&1
+          ! ./scripts/build-popos.sh --advanced --no-interactive --release=noble --arch=arm64 --kernel=system76 - >/dev/null 2>&1
+
+          # ARM64 disk images reject hybrid BIOS+UEFI firmware.
+          ! ./scripts/build-removable.sh --advanced --no-interactive --release=noble --arch=arm64 --firmware=hybrid --kernel=generic - >/dev/null 2>&1
+
+          # VM formats validation, unknown flag, and missing flag value must fail != 0.
+          ! ./scripts/build-vm.sh --advanced --no-interactive --release=noble --formats=vhd --kernel=generic - >/dev/null 2>&1
+          ! ./scripts/build.sh --relase=noble >/dev/null 2>&1
+          ! ./scripts/build.sh --release >/dev/null 2>&1
+
+          # start-here.sh validation and macOS Darwin guard check (without docker/limactl on PATH).
+          ! ./start-here.sh --distro=fedora >/dev/null 2>&1
+          ! ./start-here.sh --output=qcow >/dev/null 2>&1
+          nodocker_bin="$(mktemp -d)"
+          for b in bash basename dirname env grep mkdir printf pwd readlink tr uname; do
+            ln -s "$(command -v "$b")" "$nodocker_bin/$b"
+          done
+          ! PATH="$nodocker_bin" UVB_HOST_OS=Darwin UVB_HOST_ARCH=arm64 ./start-here.sh --distro=ubuntu >/dev/null 2>&1
+          rm -rf "$nodocker_bin"
