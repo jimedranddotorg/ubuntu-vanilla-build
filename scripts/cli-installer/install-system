@@ -143,6 +143,7 @@ zu_ZA.UTF-8 UTF-8"
 
 TARGET_ROOT="/target"           # where the new system will be assembled
 MOUNT_POINTS=()                 # stack of mounts to undo on failure/exit
+SWAP_ACTIVATED=0                # set to 1 when we activate SWAP_PART
 
 # User answers (filled in by the steps)
 LOCALE=""                       # e.g. en_US.UTF-8
@@ -163,6 +164,7 @@ HOSTNAME=""
 
 UI_MODE=""                      # tui | text (picked at welcome)
 USE_NTP=1
+REPLY=""
 
 # -----------------------------------------------------------------------------
 # Output helpers
@@ -194,13 +196,16 @@ banner() {
 }
 
 die() {
+    trap - EXIT
     err "$*"
     cleanup_mounts
     exit 1
 }
 
 trap 'on_interrupt' INT TERM
+trap 'cleanup_mounts' EXIT
 on_interrupt() {
+    trap - EXIT
     err "Interrupted. Unmounting target and aborting."
     cleanup_mounts
     exit 130
@@ -208,7 +213,7 @@ on_interrupt() {
 
 cleanup_mounts() {
     # Tear down in reverse order, ignore errors.
-    local mp
+    local idx mp=""
     for (( idx=${#MOUNT_POINTS[@]}-1 ; idx>=0 ; idx-- )); do
         mp="${MOUNT_POINTS[$idx]}"
         [ -n "$mp" ] || continue
@@ -216,8 +221,12 @@ cleanup_mounts() {
             umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
         fi
     done
-    # Deactivate any swap we may have activated on the target.
-    [ -n "$SWAP_PART" ] && swapoff "$SWAP_PART" 2>/dev/null || true
+    MOUNT_POINTS=()
+    # Deactivate any swap we activated on the target.
+    if [ "${SWAP_ACTIVATED:-0}" -eq 1 ] && [ -n "${SWAP_PART:-}" ]; then
+        swapoff "$SWAP_PART" 2>/dev/null || true
+    fi
+    SWAP_ACTIVATED=0
     [ -d "$TARGET_ROOT" ] && rmdir "$TARGET_ROOT" 2>/dev/null || true
 }
 
@@ -232,7 +241,7 @@ text_input() {
     else
         printf '%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
     fi
-    IFS= read -r value
+    IFS= read -r value || die "Cancelled by user."
     if [ -z "$value" ] && [ -n "$default" ]; then
         printf '%s\n' "$default"
         REPLY="$default"
@@ -242,30 +251,12 @@ text_input() {
 }
 
 text_password() {
-    # text_password <prompt> — set REPLY
-    local prompt="$1" first="" second=""
-    while :; do
-        printf '%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
-        IFS= read -rs first || true
-        printf '\n'
-        printf '%sConfirm %s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
-        IFS= read -rs second || true
-        printf '\n'
-        if [ "$first" != "$second" ]; then
-            warn "Passwords do not match. Try again."
-            continue
-        fi
-        if [ -z "$first" ]; then
-            warn "Password cannot be empty. Try again."
-            continue
-        fi
-        if [ "${#first}" -lt 8 ]; then
-            warn "Password must be at least 8 characters. Try again."
-            continue
-        fi
-        REPLY="$first"
-        return 0
-    done
+    # text_password <prompt> — sets REPLY
+    local prompt="$1" value=""
+    printf '%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
+    IFS= read -rs value || die "Cancelled by user."
+    printf '\n'
+    REPLY="$value"
 }
 
 text_yesno() {
@@ -276,7 +267,7 @@ text_yesno() {
     else suffix=" [y/n]"; fi
     while :; do
         printf '%s%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET" "$suffix"
-        IFS= read -r ans
+        IFS= read -r ans || die "Cancelled by user."
         ans="${ans:-$default}"
         case "$ans" in
             y|Y|yes|YES) REPLY="y"; return 0 ;;
@@ -304,7 +295,7 @@ text_choice() {
     local ans
     while :; do
         printf 'Select [1-%d] (default %d): ' "$(($#))" "$default"
-        IFS= read -r ans
+        IFS= read -r ans || die "Cancelled by user."
         ans="${ans:-$default}"
         if [[ "$ans" =~ ^[0-9]+$ ]] && [ "$ans" -ge 1 ] && [ "$ans" -le $# ]; then
             REPLY="${!ans}"
@@ -527,7 +518,7 @@ step_locale() {
             if [ -z "$filter" ]; then
                 filtered="$(cat "$map_file")"
             else
-                filtered="$(grep -i "$filter" "$map_file" || true)"
+                filtered="$(grep -Fi -- "$filter" "$map_file" || true)"
             fi
             if [ -z "$filtered" ]; then
                 warn "No locales matched '$filter' — try again."
@@ -536,8 +527,10 @@ step_locale() {
             local lines=() line tag pretty
             while IFS= read -r line; do
                 tag="${line%%	*}"
+                [ -z "$tag" ] && continue
                 lines+=("$tag")
             done <<< "$filtered"
+            [ "${#lines[@]}" -gt 0 ] || continue
             # Show a numbered list and ask the user to pick by index.
             info "Matching locales:"
             local i=1
@@ -714,11 +707,11 @@ step_timezone() {
     # Try NTP sync first if connected.
     if [ "$USE_NTP" -eq 1 ] && command -v timedatectl >/dev/null 2>&1; then
         info "Checking internet connectivity for NTP sync..."
-        if timeout 5 bash -c "</dev/tcp/2.pool.ntp.org/123" 2>/dev/null; then
+        if timeout 4 getent ahosts 2.pool.ntp.org >/dev/null 2>&1; then
             info "Internet reachable — attempting NTP sync via systemd-timesyncd..."
             timedatectl set-ntp true >/dev/null 2>&1 || true
             sleep 2
-            local ntp_status
+            local ntp_status=""
             ntp_status="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
             if [ "$ntp_status" = "yes" ]; then
                 ok "System clock synchronised with NTP."
@@ -730,21 +723,35 @@ step_timezone() {
         fi
     fi
 
-    local current_tz guess_default
-    guess_default="America/New_York"  # mirrors calamares/locale.conf
+    local current_tz="" guess_default="America/New_York"  # mirrors calamares/locale.conf
     if [ -f /etc/timezone ]; then
-        current_tz="$(cat /etc/timezone 2>/dev/null || true)"
+        current_tz="$(tr -d '[:space:]' < /etc/timezone 2>/dev/null || true)"
     fi
+    if [ -z "$current_tz" ] && command -v timedatectl >/dev/null 2>&1; then
+        current_tz="$(timedatectl show -p Timezone --value 2>/dev/null | tr -d '[:space:]' || true)"
+    fi
+    if [ -z "$current_tz" ] && [ -L /etc/localtime ]; then
+        local lt=""
+        lt="$(readlink -f /etc/localtime 2>/dev/null || true)"
+        if [[ "$lt" == /usr/share/zoneinfo/* ]]; then
+            current_tz="${lt#/usr/share/zoneinfo/}"
+        fi
+    fi
+    [ "$current_tz" = "Etc/UTC" ] && current_tz="UTC"
     if [ -n "$current_tz" ] && [ -e "/usr/share/zoneinfo/$current_tz" ]; then
         guess_default="$current_tz"
     fi
 
     if [ "$UI_MODE" = "tui" ]; then
-        local args=() tz
+        local args=() tz found_default=0
         while IFS= read -r tz; do
             [ -z "$tz" ] && continue
+            [ "$tz" = "$guess_default" ] && found_default=1
             args+=("$tz" "$tz")
         done < <(read_timezones)
+        if [ "$found_default" -eq 0 ]; then
+            args=("$guess_default" "$guess_default" "${args[@]}")
+        fi
         # Add a "Custom..." option
         args+=("__custom__" "Custom (type any IANA timezone)")
         tui_menu "Timezone" "Pick a timezone (default: $guess_default)" "$guess_default" "${args[@]}"
@@ -756,21 +763,35 @@ step_timezone() {
         fi
     else
         info "Common timezones:"
-        local lines=() line tz
+        local lines=() tz found_default=0 default_idx=1
         while IFS= read -r tz; do
             [ -z "$tz" ] && continue
+            [ "$tz" = "$guess_default" ] && found_default=1
             lines+=("$tz")
         done < <(read_timezones)
+        if [ "$found_default" -eq 0 ]; then
+            lines=("$guess_default" "${lines[@]}")
+        fi
         local i=1
-        while IFS= read -r tz; do
-            [ -z "$tz" ] && continue
-            printf '  %3d) %s\n' "$i" "$tz"
+        for tz in "${lines[@]}"; do
+            if [ "$tz" = "$guess_default" ]; then
+                default_idx="$i"
+                printf '  %3d) %s (default)\n' "$i" "$tz"
+            else
+                printf '  %3d) %s\n' "$i" "$tz"
+            fi
             i=$((i+1))
-        done < <(read_timezones)
-        printf '  %3d) %s\n' "$i" "Custom (type any IANA timezone)"
-        text_input "Choose a timezone by number" "1"
+        done
+        local custom_idx="$i"
+        printf '  %3d) %s\n' "$custom_idx" "Custom (type any IANA timezone)"
+        text_input "Choose a timezone by number" "$default_idx"
         if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
             TIMEZONE="${lines[$((REPLY-1))]}"
+        elif [ "$REPLY" = "$custom_idx" ]; then
+            text_input "Enter an IANA timezone" "$guess_default"
+            TIMEZONE="$REPLY"
+        elif [ -n "$REPLY" ] && [ -e "/usr/share/zoneinfo/$REPLY" ]; then
+            TIMEZONE="$REPLY"
         else
             text_input "Enter an IANA timezone" "$guess_default"
             TIMEZONE="$REPLY"
@@ -778,7 +799,7 @@ step_timezone() {
     fi
 
     # Validate
-    if [ ! -e "/usr/share/zoneinfo/$TIMEZONE" ]; then
+    if [ -z "$TIMEZONE" ] || [ ! -e "/usr/share/zoneinfo/$TIMEZONE" ]; then
         warn "Unknown timezone '$TIMEZONE' — falling back to UTC."
         TIMEZONE="UTC"
     fi
@@ -790,8 +811,16 @@ step_timezone() {
 # -----------------------------------------------------------------------------
 list_block_devices() {
     # Echo "<dev>\t<size>\t<model>" lines, skipping loop/ram/zram/dm-.*.
-    lsblk -bdno NAME,SIZE,MODEL,TYPE 2>/dev/null \
-        | awk '$4 == "disk" { printf "/dev/%s\t%s\t%s\n", $1, $2, $3 }'
+    lsblk -bdno NAME,SIZE,TYPE,MODEL 2>/dev/null | awk '
+        $3 == "disk" && $1 !~ /^(loop|ram|zram|dm-|fd|sr)/ && $1 !~ /^mmcblk[0-9]+(boot[0-9]+|rpmb)$/ {
+            model = ""
+            for (i = 4; i <= NF; i++) {
+                model = (model == "" ? $i : model " " $i)
+            }
+            if (model == "") model = "Disk"
+            printf "/dev/%s\t%s\t%s\n", $1, $2, model
+        }
+    '
 }
 
 step_disk() {
@@ -804,7 +833,7 @@ step_disk() {
         DISK_MODE="erase"
         [ "$REPLY" = "n" ] && DISK_MODE="manual"
     else
-        text_yesno "Erase the entire disk and let the installer partition it?\n(Choose 'n' to use manual partition mode.)" "y"
+        text_yesno $'Erase the entire disk and let the installer partition it?\n(Choose \'n\' to use manual partition mode.)' "y"
         [ "$REPLY" = "y" ] && DISK_MODE="erase" || DISK_MODE="manual"
     fi
 
@@ -973,7 +1002,7 @@ partition_erase() {
         partprobe "$dev" >/dev/null 2>&1 || true
         sleep 1
         udevadm settle >/dev/null 2>&1 || true
-        if [[ "$dev" =~ (nvme|mmcblk) ]]; then
+        if [[ "$dev" =~ [0-9]$ ]]; then
             EFI_PART="${dev}p1"; SWAP_PART="${dev}p2"; ROOT_PART="${dev}p3"
         else
             EFI_PART="${dev}1";  SWAP_PART="${dev}2";  ROOT_PART="${dev}3"
@@ -987,7 +1016,7 @@ partition_erase() {
         partprobe "$dev" >/dev/null 2>&1 || true
         sleep 1
         udevadm settle >/dev/null 2>&1 || true
-        if [[ "$dev" =~ (nvme|mmcblk) ]]; then
+        if [[ "$dev" =~ [0-9]$ ]]; then
             EFI_PART="${dev}p2"; SWAP_PART="${dev}p3"; ROOT_PART="${dev}p4"
         else
             EFI_PART="${dev}2";  SWAP_PART="${dev}3";  ROOT_PART="${dev}4"
@@ -1077,27 +1106,55 @@ partition_manual() {
 # -----------------------------------------------------------------------------
 # INSTALL (Calmares 'exec' sequence: mount → unpackfs → ... → umount)
 # -----------------------------------------------------------------------------
-mount_target() {
-    info "Mounting target filesystems under $TARGET_ROOT."
+mount_root_target() {
+    info "Mounting target root filesystem ($ROOT_PART) at $TARGET_ROOT."
     mkdir -p "$TARGET_ROOT"
     mount "$ROOT_PART" "$TARGET_ROOT"
     MOUNT_POINTS+=("$TARGET_ROOT")
+}
+
+mount_target_runtime() {
+    info "Mounting target EFI and runtime filesystems under $TARGET_ROOT."
     mkdir -p "$TARGET_ROOT/boot/efi"
     mount "$EFI_PART" "$TARGET_ROOT/boot/efi"
     MOUNT_POINTS+=("$TARGET_ROOT/boot/efi")
     if [ -n "$SWAP_PART" ]; then
-        swapon "$SWAP_PART" || warn "swapon $SWAP_PART failed — continuing."
+        if swapon "$SWAP_PART"; then
+            SWAP_ACTIVATED=1
+        else
+            warn "swapon $SWAP_PART failed — continuing."
+        fi
     fi
     # Live-bind the bits Calamares' mount.conf binds (proc/sys/dev/run/...).
+    mkdir -p "$TARGET_ROOT/proc" "$TARGET_ROOT/sys" "$TARGET_ROOT/dev" "$TARGET_ROOT/run"
     mount -t proc  proc  "$TARGET_ROOT/proc";  MOUNT_POINTS+=("$TARGET_ROOT/proc")
-    mount -t sysfs sysfs "$TARGET_ROOT/sys";  MOUNT_POINTS+=("$TARGET_ROOT/sys")
-    mount --bind /dev "$TARGET_ROOT/dev";     MOUNT_POINTS+=("$TARGET_ROOT/dev")
-    mount -t tmpfs tmpfs "$TARGET_ROOT/run";  MOUNT_POINTS+=("$TARGET_ROOT/run")
-    mount --bind /run/udev "$TARGET_ROOT/run/udev" 2>/dev/null || true
-    if [ -d /sys/firmware/efi ]; then
-        mount -t efivarfs efivarfs "$TARGET_ROOT/sys/firmware/efi/efivars" 2>/dev/null || true
+    mount -t sysfs sysfs "$TARGET_ROOT/sys";   MOUNT_POINTS+=("$TARGET_ROOT/sys")
+    if [ -d /sys/firmware/efi/efivars ]; then
+        mkdir -p "$TARGET_ROOT/sys/firmware/efi/efivars"
+        if mount -t efivarfs efivarfs "$TARGET_ROOT/sys/firmware/efi/efivars" 2>/dev/null; then
+            MOUNT_POINTS+=("$TARGET_ROOT/sys/firmware/efi/efivars")
+        fi
     fi
-    mount --bind /run/systemd/resolve "$TARGET_ROOT/run/systemd/resolve" 2>/dev/null || true
+    mount --bind /dev "$TARGET_ROOT/dev";      MOUNT_POINTS+=("$TARGET_ROOT/dev")
+    mkdir -p "$TARGET_ROOT/dev/pts"
+    if ! mountpoint -q "$TARGET_ROOT/dev/pts" 2>/dev/null; then
+        if mount -t devpts devpts "$TARGET_ROOT/dev/pts" 2>/dev/null; then
+            MOUNT_POINTS+=("$TARGET_ROOT/dev/pts")
+        fi
+    fi
+    mount -t tmpfs tmpfs "$TARGET_ROOT/run";   MOUNT_POINTS+=("$TARGET_ROOT/run")
+    if [ -d /run/udev ]; then
+        mkdir -p "$TARGET_ROOT/run/udev"
+        if mount --bind /run/udev "$TARGET_ROOT/run/udev" 2>/dev/null; then
+            MOUNT_POINTS+=("$TARGET_ROOT/run/udev")
+        fi
+    fi
+    if [ -d /run/systemd/resolve ]; then
+        mkdir -p "$TARGET_ROOT/run/systemd/resolve"
+        if mount --bind /run/systemd/resolve "$TARGET_ROOT/run/systemd/resolve" 2>/dev/null; then
+            MOUNT_POINTS+=("$TARGET_ROOT/run/systemd/resolve")
+        fi
+    fi
 }
 
 unpack_target() {
@@ -1166,13 +1223,19 @@ configure_fstab() {
 }
 
 configure_locale() {
-    info "Generating locale $LOCALE in the target."
+    info "Generating locale $LOCALE and configuring timezone $TIMEZONE in the target."
     # Mirrors calamares/localecfg + locale.conf.
-    echo "$LOCALE UTF-8" >> "$TARGET_ROOT/etc/locale.gen"
+    if [ -f "$TARGET_ROOT/etc/locale.gen" ]; then
+        sed -i "s/^# *${LOCALE} UTF-8/${LOCALE} UTF-8/" "$TARGET_ROOT/etc/locale.gen"
+    fi
+    if [ ! -f "$TARGET_ROOT/etc/locale.gen" ] || ! grep -qxF "${LOCALE} UTF-8" "$TARGET_ROOT/etc/locale.gen"; then
+        echo "${LOCALE} UTF-8" >> "$TARGET_ROOT/etc/locale.gen"
+    fi
     run_in_chroot "locale-gen $LOCALE"
     run_in_chroot "update-locale LANG=$LOCALE"
     echo "LANG=$LOCALE" > "$TARGET_ROOT/etc/default/locale"
     # Timezone (hwclock in calamares is set later, but storing here is safe).
+    echo "$TIMEZONE" > "$TARGET_ROOT/etc/timezone"
     run_in_chroot "ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime"
     run_in_chroot "dpkg-reconfigure -f noninteractive tzdata"
 }
@@ -1271,7 +1334,7 @@ if command -v update-initramfs >/dev/null 2>&1; then
     for img in /boot/vmlinuz-*; do
         [ -e "$img" ] || continue
         ver="${img##*/vmlinuz-}"
-        update-initramfs -c -k "$ver" || true
+        update-initramfs -u -t -k "$ver"
     done
 elif command -v dracut >/dev/null 2>&1; then
     dracut --regenerate-all --force
@@ -1350,7 +1413,7 @@ CHROOT_EOF
         set -e
         export DEBIAN_FRONTEND=noninteractive
         for pkg in language-pack-${lang} hunspell-${hunspell_tag} libreoffice-help-${lang} libreoffice-l10n-${lang}; do
-            apt-get install -y --no-install-recommends \"\$pkg\" 2>/dev/null || true
+            apt-get install -y --no-install-recommends -o Acquire::http::Timeout=5 -o Acquire::Retries=0 \"\$pkg\" 2>/dev/null || true
         done
     " || true
 }
@@ -1358,9 +1421,14 @@ CHROOT_EOF
 umount_target() {
     info "Unmounting target filesystems."
     # Order matters: deepest first.
-    swapoff "$SWAP_PART" 2>/dev/null || true
+    if [ "${SWAP_ACTIVATED:-0}" -eq 1 ] && [ -n "${SWAP_PART:-}" ]; then
+        swapoff "$SWAP_PART" 2>/dev/null || true
+    fi
+    SWAP_ACTIVATED=0
+    local idx mp=""
     for (( idx=${#MOUNT_POINTS[@]}-1 ; idx>=0 ; idx-- )); do
-        local mp="${MOUNT_POINTS[$idx]}"
+        mp="${MOUNT_POINTS[$idx]}"
+        [ -n "$mp" ] || continue
         if mountpoint -q "$mp" 2>/dev/null; then
             umount "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || warn "Could not unmount $mp."
         fi
@@ -1379,8 +1447,9 @@ run_installation() {
         partition_manual "$DISK_TARGET"
     fi
 
-    mount_target
+    mount_root_target
     unpack_target
+    mount_target_runtime
     configure_machineid
     configure_fstab
     configure_locale
