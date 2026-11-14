@@ -19,18 +19,18 @@ chmod +x scripts/cli-installer/install-system
 sudo ./scripts/cli-installer/install-system
 ```
 
-At startup, choose between `whiptail`/`dialog` TUI boxes or plain text prompts.
+At startup, choose between the Ubiquity-style `whiptail`/`dialog` TUI wizard (with Ubuntu/Pop!_OS orange branding and an installation progress bar) or plain text prompts.
 
 ## What It Configures
 
 - **Locale & keyboard**: curated UTF-8 list synced with `scripts/calamares/i18n/SUPPORTED` and XKB layout configuration.
 - **Timezone**: tries NTP via `timedatectl` when online, falls back offline.
 - **Partitioning**:
-  - *Erase disk*: GPT with 1 MiB `bios_grub` (`amd64` only) + 512 MiB FAT32 ESP + 4 GiB swap + ext4 root.
-  - *Manual*: runs `cfdisk` and asks which partition to use if multiple candidates match.
+  - *Erase disk (fixed default)*: GPT with 1 MiB `bios_grub` (`amd64` only) + 512 MiB FAT32 ESP + 4 GiB swap + ext4 root.
+  - *Manual*: optionally launches `cfdisk`, then asks you to pick the root (`/`) partition (and filesystem/format choice), EFI System Partition (`/boot/efi`), and optional swap partition.
 - **Bootloader**: detects `amd64` vs `arm64` and Ubuntu (`--bootloader-id=ubuntu`) vs Pop!_OS (`--bootloader-id=pop`). Installs both UEFI (`x86_64-efi` / `arm64-efi`) and legacy BIOS (`i386-pc` on `amd64`).
 - **Network**: writes Netplan config for NetworkManager if installed, or `systemd-networkd` DHCP otherwise.
-- **Cleanup**: purges live-only packages (`calamares`, `casper`, etc.) when present and attempts online installation of locale language packs.
+- **Cleanup & Completion**: purges live-only packages (`calamares`, `casper`, etc.), removes `/usr/local/bin/install-system` and live-only SSH/banner files from the installed target, and prompts you to either **Restart Now** or **Continue Testing / Exploring** in the live session.
 
 ## Scope Limits
 

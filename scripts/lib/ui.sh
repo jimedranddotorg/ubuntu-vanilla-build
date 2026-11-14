@@ -34,6 +34,102 @@ fi
 FORCE_INTERACTIVE="${FORCE_INTERACTIVE:-0}"
 UVB_UI_MODE="${UVB_UI_MODE:-}" # cli | tui
 UI_REPLY=""
+UVB_BRAND_DISTRO="${UVB_BRAND_DISTRO:-${UVB_DISTRO:-${BUILD_DISTRO:-ubuntu}}}"
+UVB_BRAND_TITLE="Ubuntu"
+UVB_DIALOGRC_FILE=""
+
+function _ui_accent_code() {
+    local d="${UVB_BRAND_DISTRO:-ubuntu}"
+    if [[ "${TERM:-}" == *256color* || -n "${COLORTERM:-}" ]]; then
+        if [[ "$d" == "popos" ]]; then
+            echo "1;38;5;214"   # Pop!_OS amber-orange (#FAA41A)
+        else
+            echo "1;38;5;208"   # Ubuntu orange (#E95420)
+        fi
+    else
+        echo "1;33"
+    fi
+}
+
+function uvb_cleanup_dialogrc() {
+    if [[ -n "${UVB_DIALOGRC_FILE:-}" && -f "$UVB_DIALOGRC_FILE" ]]; then
+        rm -f "$UVB_DIALOGRC_FILE" 2>/dev/null || true
+        UVB_DIALOGRC_FILE=""
+    fi
+}
+
+function uvb_apply_tui_theme() {
+    local d="${1:-${UVB_DISTRO:-${BUILD_DISTRO:-ubuntu}}}"
+    d="${d,,}"
+    [[ "$d" == "pop" || "$d" == "pop-os" || "$d" == "pop_os" ]] && d="popos"
+    export UVB_BRAND_DISTRO="$d"
+
+    if [[ "$d" == "popos" ]]; then
+        export UVB_BRAND_TITLE="Pop!_OS"
+        export NEWT_COLORS="root=,black:border=brown,lightgray:window=,lightgray:shadow=,black:title=brown,lightgray:button=white,gray:actbutton=black,brown:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=black,brown:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=black,brown:sellistbox=brown,lightgray:actsellistbox=black,brown:textbox=black,lightgray:acttextbox=black,brown:emptyscale=,gray:fullscale=,brown:helpline=yellow,black:roottext=yellow,black"
+    else
+        export UVB_BRAND_TITLE="Ubuntu"
+        export NEWT_COLORS="root=,magenta:border=brightred,lightgray:window=,lightgray:shadow=,black:title=brightred,lightgray:button=white,gray:actbutton=white,brightred:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=white,brightred:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=white,brightred:sellistbox=brightred,lightgray:actsellistbox=white,brightred:textbox=black,lightgray:acttextbox=white,brightred:emptyscale=,gray:fullscale=,brightred:helpline=white,magenta:roottext=brightred,magenta"
+    fi
+
+    if [[ "${UVB_UI_MODE:-cli}" == "tui" && "$(tui_tool)" == "dialog" ]]; then
+        if [[ -z "${UVB_DIALOGRC_FILE:-}" ]]; then
+            UVB_DIALOGRC_FILE="$(mktemp "${TMPDIR:-/tmp}/uvb-dialogrc.XXXXXX" 2>/dev/null || true)"
+        fi
+        if [[ -n "${UVB_DIALOGRC_FILE:-}" ]]; then
+            if [[ "$d" == "popos" ]]; then
+                cat > "$UVB_DIALOGRC_FILE" <<'EOF'
+use_shadow = ON
+use_colors = ON
+screen_color = (YELLOW,BLACK,ON)
+dialog_color = (BLACK,WHITE,OFF)
+title_color = (YELLOW,WHITE,ON)
+border_color = (YELLOW,WHITE,ON)
+button_active_color = (BLACK,YELLOW,ON)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_key_active_color = (BLACK,YELLOW,ON)
+button_key_inactive_color = (YELLOW,BLACK,ON)
+button_label_active_color = (BLACK,YELLOW,ON)
+button_label_inactive_color = (WHITE,BLACK,OFF)
+inputbox_color = (BLACK,WHITE,OFF)
+inputbox_border_color = (YELLOW,WHITE,ON)
+menubox_color = (BLACK,WHITE,OFF)
+menubox_border_color = (YELLOW,WHITE,ON)
+item_color = (BLACK,WHITE,OFF)
+item_selected_color = (BLACK,YELLOW,ON)
+tag_color = (YELLOW,WHITE,ON)
+tag_selected_color = (BLACK,YELLOW,ON)
+gauge_color = (BLACK,YELLOW,ON)
+EOF
+            else
+                cat > "$UVB_DIALOGRC_FILE" <<'EOF'
+use_shadow = ON
+use_colors = ON
+screen_color = (RED,MAGENTA,ON)
+dialog_color = (BLACK,WHITE,OFF)
+title_color = (RED,WHITE,ON)
+border_color = (RED,WHITE,ON)
+button_active_color = (WHITE,RED,ON)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_key_active_color = (WHITE,RED,ON)
+button_key_inactive_color = (RED,BLACK,ON)
+button_label_active_color = (WHITE,RED,ON)
+button_label_inactive_color = (WHITE,BLACK,OFF)
+inputbox_color = (BLACK,WHITE,OFF)
+inputbox_border_color = (RED,WHITE,ON)
+menubox_color = (BLACK,WHITE,OFF)
+menubox_border_color = (RED,WHITE,ON)
+item_color = (BLACK,WHITE,OFF)
+item_selected_color = (WHITE,RED,ON)
+tag_color = (RED,WHITE,ON)
+tag_selected_color = (WHITE,RED,ON)
+gauge_color = (WHITE,RED,ON)
+EOF
+            fi
+            export DIALOGRC="$UVB_DIALOGRC_FILE"
+        fi
+    fi
+}
 
 function ui_disable_color() {
     export NO_COLOR=1
@@ -108,16 +204,17 @@ function _ui_repeat_char() {
 
 function ui_banner() {
     local title="$1"
-    local width
+    local width accent
     width="$(_ui_rule_width)"
+    accent="$(_ui_accent_code)"
     printf '\n'
-    _ui_c_out '1;36'
+    _ui_c_out "$accent"
     _ui_repeat_char "$UI_BANNER_CHAR" "$width"
     _ui_r_out
     _ui_c_out '1'
     printf '  %s\n' "$title"
     _ui_r_out
-    _ui_c_out '1;36'
+    _ui_c_out "$accent"
     _ui_repeat_char "$UI_BANNER_CHAR" "$width"
     _ui_r_out
     printf '\n'
@@ -126,7 +223,7 @@ function ui_banner() {
 function ui_heading() {
     local title="$1"
     printf '\n'
-    _ui_c_out '1;36'
+    _ui_c_out "$(_ui_accent_code)"
     printf '%s %s\n' "${UI_RULE_CHAR}${UI_RULE_CHAR}" "$title"
     _ui_r_out
 }
@@ -134,7 +231,7 @@ function ui_heading() {
 function ui_step() {
     local n="$1" total="$2" name="$3"
     printf '\n'
-    _ui_c_out '1;36'
+    _ui_c_out "$(_ui_accent_code)"
     printf '[%d/%d]' "$n" "$total"
     _ui_r_out
     _ui_c_out '1'
@@ -146,7 +243,7 @@ function ui_ok()   { _ui_c_out '1;32'; printf '  %s  ' "$UI_SYM_OK"; _ui_r_out; 
 # Color escapes and text go to the same stream so stderr redirection never leaks escapes.
 function ui_warn() { { _ui_c_err '1;33'; printf '  %s  ' "$UI_SYM_WARN"; _ui_r_err; printf '%s\n' "$1"; } >&2; }
 function ui_err()  { { _ui_c_err '1;31'; printf '  %s  ' "$UI_SYM_ERR"; _ui_r_err; printf '%s\n' "$1"; } >&2; }
-function ui_info() { _ui_c_out '36'; printf '  %s  ' "$UI_SYM_INFO"; _ui_r_out; printf '%s\n' "$1"; }
+function ui_info() { _ui_c_out "$(_ui_accent_code)"; printf '  %s  ' "$UI_SYM_INFO"; _ui_r_out; printf '%s\n' "$1"; }
 
 function ui_kv() {
     _ui_c_out '2'
@@ -201,6 +298,7 @@ function normalize_ui_mode() {
                 export UVB_UI_MODE="cli"
             else
                 export UVB_UI_MODE="tui"
+                uvb_apply_tui_theme
             fi
             ;;
         *)
@@ -231,7 +329,7 @@ function resolve_ui_mode() {
         read -r -p "  Interface [1/2, Enter=1]: " choice
         case "${choice,,}" in
             ""|1|c|cli|text)   export UVB_UI_MODE="cli"; break ;;
-            2|t|tui|dialog)    export UVB_UI_MODE="tui"; break ;;
+            2|t|tui|dialog)    export UVB_UI_MODE="tui"; uvb_apply_tui_theme; break ;;
             *) ui_warn "Invalid selection '$choice' -- enter 1 (cli) or 2 (tui)." ;;
         esac
     done
@@ -246,7 +344,7 @@ function ui_confirm() {
         local tool h w
         tool="$(tui_tool)"
         read -r h w < <(_tui_box_dims 10 72)
-        local -a args=(--title "Confirmation")
+        local -a args=(--backtitle "${UVB_BRAND_TITLE} Vanilla Build" --title "Confirmation")
         if [[ "$default" == "n" ]]; then
             args+=(--defaultno)
         fi
@@ -279,7 +377,7 @@ function ui_input() {
         local tool val rc=0 h w
         tool="$(tui_tool)"
         read -r h w < <(_tui_box_dims 11 74)
-        val="$("$tool" --title "$title" --inputbox "$prompt" "$h" "$w" "$default" 3>&1 1>&2 2>&3)" || rc=$?
+        val="$("$tool" --backtitle "${UVB_BRAND_TITLE} Vanilla Build" --title "$title" --inputbox "$prompt" "$h" "$w" "$default" 3>&1 1>&2 2>&3)" || rc=$?
         if [[ "$rc" -ne 0 ]]; then
             ui_err "Input cancelled at '${title}'."
             exit 130
@@ -307,16 +405,16 @@ function ui_password() {
         read -r h w < <(_tui_box_dims 10 72)
         while true; do
             rc=0
-            p1="$("$tool" --title "$title" --passwordbox "$prompt" "$h" "$w" 3>&1 1>&2 2>&3)" || rc=$?
+            p1="$("$tool" --backtitle "${UVB_BRAND_TITLE} Vanilla Build" --title "$title" --passwordbox "$prompt" "$h" "$w" 3>&1 1>&2 2>&3)" || rc=$?
             [[ "$rc" -ne 0 ]] && { ui_err "Password input cancelled."; exit 130; }
             rc=0
-            p2="$("$tool" --title "$title" --passwordbox "Confirm ${prompt}" "$h" "$w" 3>&1 1>&2 2>&3)" || rc=$?
+            p2="$("$tool" --backtitle "${UVB_BRAND_TITLE} Vanilla Build" --title "$title" --passwordbox "Confirm ${prompt}" "$h" "$w" 3>&1 1>&2 2>&3)" || rc=$?
             [[ "$rc" -ne 0 ]] && { ui_err "Password confirmation cancelled."; exit 130; }
             if [[ -n "$p1" && "$p1" == "$p2" ]]; then
                 UI_REPLY="$p1"
                 return 0
             fi
-            "$tool" --title "$title" --msgbox "Passwords are empty or do not match. Try again." 8 60
+            "$tool" --backtitle "${UVB_BRAND_TITLE} Vanilla Build" --title "$title" --msgbox "Passwords are empty or do not match. Try again." 8 60
         done
     fi
 
@@ -350,7 +448,7 @@ function ui_menu() {
         list_height=$(( count > max_list ? max_list : count ))
         height=$(( list_height + 9 ))
         (( height > max_h )) && height="$max_h"
-        local -a cmd=("$tool" --title "$title")
+        local -a cmd=("$tool" --backtitle "${UVB_BRAND_TITLE} Vanilla Build" --title "$title")
         if [[ -n "$default_tag" ]]; then
             cmd+=(--default-item "$default_tag")
         fi

@@ -436,6 +436,7 @@ run_multi_build_wizard() {
         local q_distro q_output q_rel q_arch q_prof q_kern q_desk
         pick_distro_interactive " (#${idx})"
         q_distro="$UI_REPLY"
+        uvb_apply_tui_theme "$q_distro"
         pick_output_interactive " (#${idx})"
         q_output="$UI_REPLY"
 
@@ -550,6 +551,7 @@ if [[ "$GENERATE_CONFIG" -eq 0 ]]; then
 else
     export UVB_UI_MODE="${UVB_UI_MODE:-cli}"
 fi
+uvb_apply_tui_theme "${BUILD_DISTRO:-ubuntu}"
 
 if [[ "$MULTI_BUILD_REQUESTED" -eq 1 ]]; then
     run_multi_build_wizard
@@ -565,6 +567,7 @@ if [[ -z "$BUILD_DISTRO" ]]; then
         BUILD_DISTRO="ubuntu"
     fi
 fi
+uvb_apply_tui_theme "$BUILD_DISTRO"
 
 # -- Output type selection --------------------------------------------
 if [[ -z "$BUILD_OUTPUT" ]]; then
@@ -632,7 +635,10 @@ cleanup_sudo_keepalive() {
         wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     fi
     SUDO_KEEPALIVE_PID=""
+    uvb_cleanup_dialogrc
 }
+
+trap uvb_cleanup_dialogrc EXIT
 
 if [[ "$GENERATE_CONFIG" -eq 0 && "$SCREEN_WANT" -eq 0 ]] && [[ "$(id -u)" -ne 0 ]]; then
     ui_info "Requesting sudo credentials (kept alive for the entire build) ..."

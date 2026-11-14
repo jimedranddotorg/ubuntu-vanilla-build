@@ -113,7 +113,7 @@ function install_cli_installer_into_live() {
     if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
         install -d /etc/profile.d
         cat <<'EOF' > /etc/profile.d/99-uvb-live-cli.sh
-if [ -f /cdrom/casper/filesystem.squashfs ]; then
+if [ -f /cdrom/casper/filesystem.squashfs ] && grep -qw 'boot=casper' /proc/cmdline 2>/dev/null; then
     printf '\n  Live CLI environment ready. To install to disk, run:\n'
     printf '    sudo install-system\n\n'
 fi
@@ -200,6 +200,11 @@ EOF
     install_cli_installer_into_live
     customize_image
     run_chroot_hooks
+
+    if command -v update-initramfs >/dev/null 2>&1; then
+        echo "=====> updating initramfs with live casper configuration ..."
+        update-initramfs -u -k all || true
+    fi
 
     apt-get autoremove -y
     configure_locale_and_keyboard

@@ -54,6 +54,20 @@ on:
           - lxde
           - lxqt
         default: gnome
+      desktop_variant:
+        description: "Desktop tier / extras (GNOME recommends, KDE tier, or MATE options)"
+        type: choice
+        options:
+          - default
+          - gnome-recommends
+          - kde-standard
+          - kde-plasma-desktop
+          - kde-full
+          - mate-full
+          - mate-core
+          - mate-full-extras
+          - mate-core-extras
+        default: default
       kernel:
         description: "Kernel flavor (system76 is Pop!_OS amd64 only)"
         type: choice
@@ -62,18 +76,6 @@ on:
           - lowlatency
           - system76
         default: generic
-      kde_package:
-        description: "KDE metapackage tier (when desktop = kde-plasma)"
-        type: choice
-        options:
-          - kde-standard
-          - kde-plasma-desktop
-          - kde-full
-        default: kde-standard
-      gnome_recommends:
-        description: "Include APT recommends for vanilla-gnome-desktop"
-        type: boolean
-        default: false
       brave_channel:
         description: "Brave browser channel (desktop profile)"
         type: choice
@@ -104,13 +106,17 @@ on:
         type: boolean
         default: true
       openssh_server:
-        description: "OpenSSH server (auto enables on cloud img)"
+        description: "OpenSSH server (auto enables on cloud img; ISO uses ubuntu/popos live password)"
         type: choice
         options:
           - auto
           - enable
           - disable
         default: auto
+      cockpit:
+        description: "Pre-install Cockpit web admin console"
+        type: boolean
+        default: false
       firmware:
         description: "Disk image firmware (auto = hybrid for amd64 removable, else uefi)"
         type: choice
@@ -150,6 +156,22 @@ on:
         description: "Keyboard layout code (e.g. us, de)"
         type: string
         default: us
+      config_file:
+        description: "Optional repo .cfg path for Advanced Mode custom ISOs (e.g. scripts/build.cfg)"
+        type: string
+        default: ""
+      config_mode:
+        description: "Precedence when config_file is set"
+        type: choice
+        options:
+          - inputs-override-config
+          - config-wins
+          - inputs-only
+        default: inputs-override-config
+      advanced_overrides:
+        description: "Advanced Mode KEY=VALUE overrides (; or newline-separated, e.g. TARGET_FWUPD=1; TARGET_NAME=custom)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -170,21 +192,24 @@ jobs:
       IN_ARCH: ${{ inputs.arch }}
       IN_PROFILE: ${{ inputs.profile }}
       IN_DESKTOP: ${{ inputs.desktop }}
+      IN_DESKTOP_VARIANT: ${{ inputs.desktop_variant }}
       IN_KERNEL: ${{ inputs.kernel }}
-      IN_KDE_PACKAGE: ${{ inputs.kde_package }}
-      IN_GNOME_RECOMMENDS: ${{ inputs.gnome_recommends }}
       IN_BRAVE_CHANNEL: ${{ inputs.brave_channel }}
       IN_FIREFOX_VARIANT: ${{ inputs.firefox_variant }}
       IN_LIBREWOLF: ${{ inputs.librewolf }}
       IN_THUNDERBIRD: ${{ inputs.thunderbird }}
       IN_PACSTALL: ${{ inputs.pacstall }}
       IN_OPENSSH_SERVER: ${{ inputs.openssh_server }}
+      IN_COCKPIT: ${{ inputs.cockpit }}
       IN_FIRMWARE: ${{ inputs.firmware }}
       IN_DISK_SIZE_GB: ${{ inputs.disk_size_gb }}
       IN_VM_FORMATS: ${{ inputs.vm_formats }}
       IN_NETWORK_STACK: ${{ inputs.network_stack }}
       IN_LOCALE: ${{ inputs.locale }}
       IN_KEYBOARD_LAYOUT: ${{ inputs.keyboard_layout }}
+      IN_CONFIG_FILE: ${{ inputs.config_file }}
+      IN_CONFIG_MODE: ${{ inputs.config_mode }}
+      IN_ADVANCED_OVERRIDES: ${{ inputs.advanced_overrides }}
 
     steps:
       - name: Checkout repository
@@ -192,42 +217,6 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-
-      - name: Validate workflow input combinations
-        run: |
-          set -euo pipefail
-          if [[ "$IN_DISTRO" == "popos" && "$IN_RELEASE" == "devel" ]]; then
-            echo "::error::Pop!_OS does not support the 'devel' suite. Choose 'noble' or 'resolute'."
-            exit 1
-          fi
-          if [[ "$IN_KERNEL" == "system76" && "$IN_DISTRO" != "popos" ]]; then
-            echo "::error::Kernel 'system76' is only available for Pop!_OS builds."
-            exit 1
-          fi
-          if [[ "$IN_KERNEL" == "system76" && "$IN_ARCH" == "arm64" ]]; then
-            echo "::error::linux-system76 is only published for amd64; choose 'generic' or 'lowlatency' on arm64."
-            exit 1
-          fi
-          if [[ "$IN_FIREFOX_VARIANT" == "firefox-popos" && "$IN_DISTRO" != "popos" ]]; then
-            echo "::error::'firefox-popos' is only available for Pop!_OS builds."
-            exit 1
-          fi
-          if [[ "$IN_ARCH" == "arm64" && "$IN_OUTPUT" != "iso" && "$IN_FIRMWARE" == "hybrid" ]]; then
-            echo "::error::ARM64 disk images only support UEFI firmware (set firmware to 'auto' or 'uefi')."
-            exit 1
-          fi
-          if [[ -n "$IN_DISK_SIZE_GB" && ! "$IN_DISK_SIZE_GB" =~ ^[0-9]+$ ]]; then
-            echo "::error::disk_size_gb must be an integer (got: '$IN_DISK_SIZE_GB')."
-            exit 1
-          fi
-          if [[ -n "$IN_LOCALE" && ! "$IN_LOCALE" =~ ^[A-Za-z0-9_.@-]+$ ]]; then
-            echo "::error::Invalid locale format: '$IN_LOCALE'."
-            exit 1
-          fi
-          if [[ -n "$IN_KEYBOARD_LAYOUT" && ! "$IN_KEYBOARD_LAYOUT" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-            echo "::error::Invalid keyboard layout code: '$IN_KEYBOARD_LAYOUT'."
-            exit 1
-          fi
 
       - name: Prepare runner disk space and directories
         run: |
@@ -248,6 +237,213 @@ jobs:
           echo "UVB_OUT_BASE=${out_base}" >> "$GITHUB_ENV"
           df -h "$ws_base"
 
+      - name: Resolve Advanced Mode config and validate inputs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, sys
+          from pathlib import Path
+
+          repo_root = Path.cwd().resolve()
+          common_txt = (repo_root / "scripts/lib/common.sh").read_text(encoding="utf-8")
+          m_allow = re.search(r'case "\$key" in\s*(.*?)\n\s*;;', common_txt, re.S)
+          allow = set(re.findall(r'[A-Z_][A-Z0-9_]*', m_allow.group(1)))
+
+          def parse_kv_lines(text, source_label):
+              parsed = {}
+              for raw_line in text.splitlines():
+                  line = raw_line.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  # strip inline comment starting with whitespace + '#'
+                  line = re.sub(r'\s+#.*$', '', line).strip()
+                  m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line)
+                  if not m:
+                      print(f"::error::Invalid config syntax in {source_label}: {raw_line}", file=sys.stderr)
+                      sys.exit(1)
+                  key, val = m.group(1), m.group(2).strip()
+                  if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                      if len(val) >= 2:
+                          val = val[1:-1].strip()
+                  if key not in allow:
+                      print(f"::error::Unsupported config key '{key}' in {source_label}.", file=sys.stderr)
+                      sys.exit(1)
+                  if val:
+                      parsed[key] = val
+              return parsed
+
+          distro = os.environ["IN_DISTRO"]
+          output = os.environ["IN_OUTPUT"]
+          config_file = os.environ["IN_CONFIG_FILE"].strip()
+          config_mode = os.environ["IN_CONFIG_MODE"]
+          overrides_raw = os.environ["IN_ADVANCED_OVERRIDES"].strip()
+
+          cfg_kv = {}
+          if config_mode != "inputs-only" and config_file:
+              cfg_path = (repo_root / config_file).resolve()
+              try:
+                  cfg_path.relative_to(repo_root)
+              except ValueError:
+                  print(f"::error::config_file must stay inside the repository: {config_file}", file=sys.stderr)
+                  sys.exit(1)
+              if not cfg_path.is_file():
+                  print(f"::error::config_file not found: {config_file}", file=sys.stderr)
+                  sys.exit(1)
+              cfg_kv = parse_kv_lines(cfg_path.read_text(encoding="utf-8"), config_file)
+          elif config_mode == "config-wins" and not config_file:
+              print("::error::config_mode='config-wins' requires config_file to be specified.", file=sys.stderr)
+              sys.exit(1)
+
+          # Parse semicolon- or newline-separated KEY=VALUE overrides.
+          override_lines = "\n".join(part.strip() for chunk in overrides_raw.splitlines() for part in chunk.split(";") if part.strip())
+          override_kv = parse_kv_lines(override_lines, "advanced_overrides") if override_lines else {}
+
+          # Build workflow input map.
+          input_kv = {
+              "TARGET_UBUNTU_VERSION": os.environ["IN_RELEASE"],
+              "TARGET_ARCH": os.environ["IN_ARCH"],
+              "TARGET_IMAGE_PROFILE": os.environ["IN_PROFILE"],
+              "TARGET_KERNEL_FLAVOR": os.environ["IN_KERNEL"],
+              "TARGET_PACSTALL": "1" if os.environ["IN_PACSTALL"] == "true" else "0",
+              "TARGET_COCKPIT": "1" if os.environ["IN_COCKPIT"] == "true" else "0",
+          }
+
+          if os.environ["IN_PROFILE"] == "desktop":
+              desktop = os.environ["IN_DESKTOP"]
+              variant = os.environ["IN_DESKTOP_VARIANT"]
+              input_kv["TARGET_DESKTOP"] = desktop
+              input_kv["TARGET_BRAVE_CHANNEL"] = os.environ["IN_BRAVE_CHANNEL"]
+              input_kv["TARGET_LIBREWOLF"] = "1" if os.environ["IN_LIBREWOLF"] == "true" else "0"
+              input_kv["TARGET_THUNDERBIRD"] = "1" if os.environ["IN_THUNDERBIRD"] == "true" else "0"
+              ff = os.environ["IN_FIREFOX_VARIANT"]
+              input_kv["TARGET_FIREFOX"] = "1" if ff == "firefox" else "0"
+              input_kv["TARGET_FIREFOX_ESR"] = "1" if ff == "firefox-esr" else "0"
+              input_kv["TARGET_FIREFOX_POPOS"] = "1" if ff == "firefox-popos" else "0"
+              if variant == "gnome-recommends":
+                  if desktop != "gnome" and config_mode != "config-wins":
+                      print("::error::desktop_variant='gnome-recommends' requires desktop='gnome'.", file=sys.stderr)
+                      sys.exit(1)
+                  input_kv["TARGET_GNOME_INSTALL_RECOMMENDS"] = "1"
+              elif variant.startswith("kde-"):
+                  if desktop != "kde-plasma" and config_mode != "config-wins":
+                      print(f"::error::desktop_variant='{variant}' requires desktop='kde-plasma'.", file=sys.stderr)
+                      sys.exit(1)
+                  input_kv["TARGET_KDE_PACKAGE"] = variant
+              elif variant.startswith("mate-"):
+                  if desktop != "mate" and config_mode != "config-wins":
+                      print(f"::error::desktop_variant='{variant}' requires desktop='mate'.", file=sys.stderr)
+                      sys.exit(1)
+                  input_kv["TARGET_MATE_PACKAGE"] = "mate-desktop-environment-core" if "core" in variant else "mate-desktop-environment"
+                  input_kv["TARGET_MATE_EXTRAS"] = "1" if "extras" in variant else "0"
+          else:
+              input_kv["TARGET_DESKTOP"] = "cli"
+              if os.environ["IN_NETWORK_STACK"] != "auto":
+                  input_kv["TARGET_NETWORK_STACK"] = os.environ["IN_NETWORK_STACK"]
+
+          openssh = os.environ["IN_OPENSSH_SERVER"]
+          if openssh == "enable":
+              input_kv["TARGET_OPENSSH_SERVER"] = "1"
+          elif openssh == "disable":
+              input_kv["TARGET_OPENSSH_SERVER"] = "0"
+
+          if output != "iso":
+              if os.environ["IN_FIRMWARE"] != "auto":
+                  input_kv["TARGET_FIRMWARE"] = os.environ["IN_FIRMWARE"]
+              disk_sz = os.environ["IN_DISK_SIZE_GB"].strip()
+              if disk_sz:
+                  if not disk_sz.isdigit():
+                      print(f"::error::disk_size_gb must be an integer (got: '{disk_sz}').", file=sys.stderr)
+                      sys.exit(1)
+                  input_kv["TARGET_DISK_SIZE_GB"] = disk_sz
+              if output == "vm":
+                  input_kv["TARGET_VM_FORMATS"] = os.environ["IN_VM_FORMATS"]
+
+          locale = os.environ["IN_LOCALE"].strip()
+          if locale:
+              if not re.match(r'^[A-Za-z0-9_.@-]+$', locale):
+                  print(f"::error::Invalid locale format: '{locale}'.", file=sys.stderr)
+                  sys.exit(1)
+              input_kv["TARGET_LOCALE"] = locale
+
+          kb = os.environ["IN_KEYBOARD_LAYOUT"].strip()
+          if kb:
+              if not re.match(r'^[a-zA-Z0-9_-]+$', kb):
+                  print(f"::error::Invalid keyboard layout code: '{kb}'.", file=sys.stderr)
+                  sys.exit(1)
+              input_kv["TARGET_KEYBOARD_LAYOUT"] = kb
+
+          # Merge according to config_mode.
+          if config_mode == "inputs-only":
+              merged = {**input_kv, **override_kv}
+          elif config_mode == "config-wins":
+              merged = dict(cfg_kv)
+              ff_keys = {"TARGET_FIREFOX", "TARGET_FIREFOX_ESR", "TARGET_FIREFOX_POPOS"}
+              cfg_has_ff = any(k in cfg_kv for k in ff_keys)
+              for k, v in input_kv.items():
+                  if k in merged:
+                      continue
+                  if k in ff_keys and cfg_has_ff:
+                      continue
+                  if k == "TARGET_DESKTOP" and cfg_kv.get("TARGET_IMAGE_PROFILE") == "cli":
+                      continue
+                  merged[k] = v
+              merged.update(override_kv)
+          else:  # inputs-override-config
+              merged = {**cfg_kv, **input_kv, **override_kv}
+
+          # Always enforce CI runtime paths & non-interactive Advanced Mode flags.
+          merged["ADVANCED_MODE"] = "1"
+          merged["INTERACTIVE"] = "0"
+          merged["NO_CONFIRM"] = "1"
+          merged["UVB_UI_MODE"] = "cli"
+          merged["UBUNTU_VANILLA_WORKSPACE"] = os.environ["UVB_WS_BASE"]
+          merged["UVB_OUTPUT_DIR"] = os.environ["UVB_OUT_BASE"]
+
+          # Validate resolved combination.
+          rel = merged.get("TARGET_UBUNTU_VERSION", "")
+          arch = merged.get("TARGET_ARCH", "amd64")
+          prof = merged.get("TARGET_IMAGE_PROFILE", "desktop")
+          kern = merged.get("TARGET_KERNEL_FLAVOR", "generic")
+          desk = merged.get("TARGET_DESKTOP", "cli" if prof == "cli" else "gnome")
+          fw = merged.get("TARGET_FIRMWARE", "uefi")
+          vm_fmt = merged.get("TARGET_VM_FORMATS", "qcow2")
+
+          if distro == "popos" and rel == "devel":
+              print("::error::Pop!_OS does not support the 'devel' suite. Choose 'noble' or 'resolute'.", file=sys.stderr)
+              sys.exit(1)
+          if kern == "system76" and distro != "popos":
+              print("::error::Kernel 'system76' is only available for Pop!_OS builds.", file=sys.stderr)
+              sys.exit(1)
+          if kern == "system76" and arch == "arm64":
+              print("::error::linux-system76 is only published for amd64; choose 'generic' or 'lowlatency' on arm64.", file=sys.stderr)
+              sys.exit(1)
+          if merged.get("TARGET_FIREFOX_POPOS") == "1" and distro != "popos":
+              print("::error::'firefox-popos' is only available for Pop!_OS builds.", file=sys.stderr)
+              sys.exit(1)
+          if arch == "arm64" and output != "iso" and fw == "hybrid":
+              print("::error::ARM64 disk images only support UEFI firmware (set firmware to 'auto' or 'uefi').", file=sys.stderr)
+              sys.exit(1)
+
+          runner_arch = os.environ["IN_ARCH"]
+          need_qemu = "1" if arch != runner_arch else "0"
+
+          cfg_out = Path(os.environ["RUNNER_TEMP"]) / "uvb-ci.cfg"
+          lines = ["# Generated by GitHub Actions (Advanced Mode)"]
+          for k in sorted(merged):
+              lines.append(f"{k}={merged[k]}")
+          cfg_out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as envf:
+              envf.write(f"UVB_CI_CFG={cfg_out}\n")
+              envf.write(f"NEED_QEMU_USER={need_qemu}\n")
+              envf.write(f"RESOLVED_RELEASE={rel}\n")
+              envf.write(f"RESOLVED_ARCH={arch}\n")
+              envf.write(f"RESOLVED_PROFILE={prof}\n")
+              envf.write(f"RESOLVED_DESKTOP={desk}\n")
+              envf.write(f"RESOLVED_KERNEL={kern}\n")
+              envf.write(f"RESOLVED_VM_FORMATS={vm_fmt}\n")
+          PY
+
       - name: Install host build dependencies
         run: |
           set -euo pipefail
@@ -258,9 +454,16 @@ jobs:
             vm)            pkgs+=(parted dosfstools e2fsprogs rsync qemu-utils) ;;
           esac
           sudo apt-get update
+          if [[ "${NEED_QEMU_USER:-0}" == "1" ]]; then
+            if apt-cache show qemu-user-static >/dev/null 2>&1; then
+              pkgs+=(qemu-user-static)
+            else
+              pkgs+=(qemu-user qemu-user-binfmt)
+            fi
+          fi
           sudo apt-get install -y "${pkgs[@]}"
 
-      - name: Build image
+      - name: Build image (Advanced Mode)
         run: |
           set -euo pipefail
           case "${IN_DISTRO}-${IN_OUTPUT}" in
@@ -275,56 +478,13 @@ jobs:
             *) echo "::error::Unsupported target ${IN_DISTRO}-${IN_OUTPUT}"; exit 1 ;;
           esac
 
-          args=(
-            --advanced
-            --no-interactive
-            --no-color
-            --no-screen
-            "--release=${IN_RELEASE}"
-            "--arch=${IN_ARCH}"
-            "--profile=${IN_PROFILE}"
-            "--kernel=${IN_KERNEL}"
-          )
-
-          if [[ "$IN_PROFILE" == "desktop" ]]; then
-            args+=("--desktop=${IN_DESKTOP}" "--brave=${IN_BRAVE_CHANNEL}")
-            if [[ "$IN_DESKTOP" == "kde-plasma" ]]; then
-              args+=("--kde=${IN_KDE_PACKAGE}")
-            fi
-            if [[ "$IN_DESKTOP" == "gnome" && "$IN_GNOME_RECOMMENDS" == "true" ]]; then
-              export TARGET_GNOME_INSTALL_RECOMMENDS=1
-            fi
-            case "$IN_FIREFOX_VARIANT" in
-              firefox)       args+=(--firefox) ;;
-              firefox-esr)   args+=(--firefox-esr) ;;
-              firefox-popos) args+=(--firefox-popos) ;;
-            esac
-            [[ "$IN_LIBREWOLF" == "true" ]] && args+=(--librewolf) || args+=(--no-librewolf)
-            [[ "$IN_THUNDERBIRD" == "true" ]] && args+=(--thunderbird) || args+=(--no-thunderbird)
-          else
-            if [[ "$IN_NETWORK_STACK" != "auto" ]]; then
-              args+=("--network=${IN_NETWORK_STACK}")
-            fi
-          fi
-
-          [[ "$IN_PACSTALL" == "true" ]] && args+=(--pacstall) || args+=(--no-pacstall)
-          case "$IN_OPENSSH_SERVER" in
-            enable)  args+=(--openssh-server) ;;
-            disable) args+=(--no-openssh-server) ;;
-          esac
-
-          if [[ "$IN_OUTPUT" != "iso" ]]; then
-            [[ "$IN_FIRMWARE" != "auto" ]] && args+=("--firmware=${IN_FIRMWARE}")
-            [[ -n "$IN_DISK_SIZE_GB" ]] && args+=("--disk-size=${IN_DISK_SIZE_GB}")
-            [[ "$IN_OUTPUT" == "vm" ]] && args+=("--formats=${IN_VM_FORMATS}")
-          fi
-
-          [[ -n "$IN_LOCALE" ]] && args+=("--locale=${IN_LOCALE}")
-          [[ -n "$IN_KEYBOARD_LAYOUT" ]] && args+=("--keyboard-layout=${IN_KEYBOARD_LAYOUT}")
-
-          export UBUNTU_VANILLA_WORKSPACE="$UVB_WS_BASE"
-          export UVB_OUTPUT_DIR="$UVB_OUT_BASE"
-          "$builder" "${args[@]}" -
+          "$builder" \
+            --advanced \
+            --config="${UVB_CI_CFG}" \
+            --no-interactive \
+            --no-color \
+            --no-screen \
+            -
 
       - name: Verify checksums and prepare artifacts
         run: |
@@ -338,7 +498,7 @@ jobs:
 
           # Compress raw .img artifacts with zstd so GitHub Actions artifact upload stays compact.
           for img in *.img; do
-            if [[ "$IN_OUTPUT" == "vm" && "$IN_VM_FORMATS" != "none" ]]; then
+            if [[ "$IN_OUTPUT" == "vm" && "${RESOLVED_VM_FORMATS:-qcow2}" != "none" ]]; then
               rm -f -- "$img" "${img}.sha1" "${img}.sha256"
             else
               zstd -T0 --rm -q "$img"
@@ -351,8 +511,14 @@ jobs:
             echo "## Build Summary"
             echo ""
             echo "- **Target**: \`${IN_DISTRO} / ${IN_OUTPUT}\`"
-            echo "- **Release / Arch**: \`${IN_RELEASE} / ${IN_ARCH}\`"
-            echo "- **Profile / Kernel**: \`${IN_PROFILE} (${IN_DESKTOP}) / ${IN_KERNEL}\`"
+            echo "- **Release / Arch**: \`${RESOLVED_RELEASE} / ${RESOLVED_ARCH}\`"
+            echo "- **Profile / Kernel**: \`${RESOLVED_PROFILE} (${RESOLVED_DESKTOP}) / ${RESOLVED_KERNEL}\`"
+            echo "- **Config Mode**: \`${IN_CONFIG_MODE}\`${IN_CONFIG_FILE:+ (\`${IN_CONFIG_FILE}\`)}"
+            echo ""
+            echo "### Resolved Advanced Mode Configuration"
+            echo '```ini'
+            sed 's/^TARGET_USER_PASSWORD=.*/TARGET_USER_PASSWORD=***/' "$UVB_CI_CFG"
+            echo '```'
             echo ""
             echo "### Artifacts"
             ls -lh
@@ -366,7 +532,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ inputs.distro }}-${{ inputs.output }}-${{ inputs.release }}-${{ inputs.arch }}-${{ inputs.profile }}
+          name: ${{ inputs.distro }}-${{ inputs.output }}-${{ env.RESOLVED_RELEASE }}-${{ env.RESOLVED_ARCH }}-${{ env.RESOLVED_PROFILE }}
           path: ${{ env.UVB_OUT_BASE }}/*
           if-no-files-found: error
           retention-days: 14

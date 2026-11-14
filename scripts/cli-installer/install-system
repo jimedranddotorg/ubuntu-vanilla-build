@@ -144,6 +144,15 @@ zu_ZA.UTF-8 UTF-8"
 TARGET_ROOT="/target"           # where the new system will be assembled
 MOUNT_POINTS=()                 # stack of mounts to undo on failure/exit
 SWAP_ACTIVATED=0                # set to 1 when we activate SWAP_PART
+DISTRO_ID="ubuntu"              # ubuntu | pop (auto-detected from /etc/os-release)
+DISTRO_NAME="Ubuntu"            # Ubuntu | Pop!_OS
+STEP_LABEL=""                   # current Ubiquity wizard step label for backtitle
+CURRENT_INSTALL_STEP=""
+INSTALL_LOG="/var/log/install-system.log"
+DIALOGRC_FILE=""
+GAUGE_FIFO=""
+GAUGE_PID=""
+GAUGE_FD_OPEN=0
 
 # User answers (filled in by the steps)
 LOCALE=""                       # e.g. en_US.UTF-8
@@ -154,9 +163,13 @@ KEYBOARD_VARIANT=""             # e.g. ""
 TIMEZONE=""                     # e.g. America/New_York
 DISK_MODE=""                    # erase | manual
 DISK_TARGET=""                  # e.g. /dev/sda
-EFI_PART=""                     # e.g. /dev/sda1
+EFI_PART=""                     # e.g. /dev/sda1 (optional on BIOS-only manual)
 ROOT_PART=""                    # e.g. /dev/sda3
-SWAP_PART=""                    # e.g. /dev/sda4
+SWAP_PART=""                    # e.g. /dev/sda4 (optional)
+FORMAT_ROOT=1                   # 1 = format ROOT_PART, 0 = keep existing fs
+ROOT_FSTYPE="ext4"              # ext4 | btrfs | xfs
+FORMAT_EFI=1                    # 1 = format EFI_PART as FAT32, 0 = keep existing
+FORMAT_SWAP=1                   # 1 = run mkswap on SWAP_PART, 0 = already swap
 USERNAME=""
 FULLNAME=""
 PASSWORD=""
@@ -167,7 +180,7 @@ USE_NTP=1
 REPLY=""
 
 # -----------------------------------------------------------------------------
-# Output helpers
+# Output & branding helpers
 # -----------------------------------------------------------------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_RESET=$'\033[0m'
@@ -176,27 +189,152 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_RED=$'\033[31m'
     C_GREEN=$'\033[32m'
     C_YELLOW=$'\033[33m'
-    C_MAGENTA=$'\033[35m'
-    C_CYAN=$'\033[36m'
+    if [[ "${TERM:-}" == *256color* || -n "${COLORTERM:-}" ]]; then
+        C_ACCENT=$'\033[1;38;5;208m'
+    else
+        C_ACCENT=$'\033[1;33m'
+    fi
 else
     C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""
-    C_GREEN=""; C_YELLOW=""; C_MAGENTA=""; C_CYAN=""
+    C_GREEN=""; C_YELLOW=""; C_ACCENT=""
 fi
 
-info()  { printf '%s[i]%s %s\n' "$C_CYAN" "$C_RESET" "$*"; }
+detect_live_distro() {
+    if [ -r /etc/os-release ] && grep -qs '^ID=pop$' /etc/os-release; then
+        DISTRO_ID="pop"
+        DISTRO_NAME="Pop!_OS"
+    else
+        DISTRO_ID="ubuntu"
+        DISTRO_NAME="Ubuntu"
+    fi
+}
+
+apply_installer_theme() {
+    detect_live_distro
+    if [ -n "$C_RESET" ] && [[ "${TERM:-}" == *256color* || -n "${COLORTERM:-}" ]]; then
+        if [ "$DISTRO_ID" = "pop" ]; then
+            C_ACCENT=$'\033[1;38;5;214m'
+        else
+            C_ACCENT=$'\033[1;38;5;208m'
+        fi
+    fi
+
+    if [ "$DISTRO_ID" = "pop" ]; then
+        export NEWT_COLORS="root=,black:border=brown,lightgray:window=,lightgray:shadow=,black:title=brown,lightgray:button=white,gray:actbutton=black,brown:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=black,brown:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=black,brown:sellistbox=brown,lightgray:actsellistbox=black,brown:textbox=black,lightgray:acttextbox=black,brown:emptyscale=,gray:fullscale=,brown:helpline=yellow,black:roottext=yellow,black"
+    else
+        export NEWT_COLORS="root=,magenta:border=brightred,lightgray:window=,lightgray:shadow=,black:title=brightred,lightgray:button=white,gray:actbutton=white,brightred:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=white,brightred:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=white,brightred:sellistbox=brightred,lightgray:actsellistbox=white,brightred:textbox=black,lightgray:acttextbox=white,brightred:emptyscale=,gray:fullscale=,brightred:helpline=white,magenta:roottext=brightred,magenta"
+    fi
+
+    if ! have_whiptail && have_dialog; then
+        if [ -z "$DIALOGRC_FILE" ]; then
+            DIALOGRC_FILE="$(mktemp "${TMPDIR:-/tmp}/install-system-dialogrc.XXXXXX" 2>/dev/null || true)"
+        fi
+        if [ -n "$DIALOGRC_FILE" ]; then
+            if [ "$DISTRO_ID" = "pop" ]; then
+                cat > "$DIALOGRC_FILE" <<'EOF'
+use_shadow = ON
+use_colors = ON
+screen_color = (YELLOW,BLACK,ON)
+dialog_color = (BLACK,WHITE,OFF)
+title_color = (YELLOW,WHITE,ON)
+border_color = (YELLOW,WHITE,ON)
+button_active_color = (BLACK,YELLOW,ON)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_key_active_color = (BLACK,YELLOW,ON)
+button_key_inactive_color = (YELLOW,BLACK,ON)
+button_label_active_color = (BLACK,YELLOW,ON)
+button_label_inactive_color = (WHITE,BLACK,OFF)
+inputbox_color = (BLACK,WHITE,OFF)
+inputbox_border_color = (YELLOW,WHITE,ON)
+menubox_color = (BLACK,WHITE,OFF)
+menubox_border_color = (YELLOW,WHITE,ON)
+item_color = (BLACK,WHITE,OFF)
+item_selected_color = (BLACK,YELLOW,ON)
+tag_color = (YELLOW,WHITE,ON)
+tag_selected_color = (BLACK,YELLOW,ON)
+gauge_color = (BLACK,YELLOW,ON)
+EOF
+            else
+                cat > "$DIALOGRC_FILE" <<'EOF'
+use_shadow = ON
+use_colors = ON
+screen_color = (RED,MAGENTA,ON)
+dialog_color = (BLACK,WHITE,OFF)
+title_color = (RED,WHITE,ON)
+border_color = (RED,WHITE,ON)
+button_active_color = (WHITE,RED,ON)
+button_inactive_color = (WHITE,BLACK,OFF)
+button_key_active_color = (WHITE,RED,ON)
+button_key_inactive_color = (RED,BLACK,ON)
+button_label_active_color = (WHITE,RED,ON)
+button_label_inactive_color = (WHITE,BLACK,OFF)
+inputbox_color = (BLACK,WHITE,OFF)
+inputbox_border_color = (RED,WHITE,ON)
+menubox_color = (BLACK,WHITE,OFF)
+menubox_border_color = (RED,WHITE,ON)
+item_color = (BLACK,WHITE,OFF)
+item_selected_color = (WHITE,RED,ON)
+tag_color = (RED,WHITE,ON)
+tag_selected_color = (WHITE,RED,ON)
+gauge_color = (WHITE,RED,ON)
+EOF
+            fi
+            export DIALOGRC="$DIALOGRC_FILE"
+        fi
+    fi
+}
+
+current_backtitle() {
+    if [ -n "$STEP_LABEL" ]; then
+        printf '%s Installer  |  %s' "$DISTRO_NAME" "$STEP_LABEL"
+    else
+        printf '%s Installer' "$DISTRO_NAME"
+    fi
+}
+
+info()  { printf '%s[i]%s %s\n' "$C_ACCENT" "$C_RESET" "$*"; }
 ok()    { printf '%s[+]%s %s\n' "$C_GREEN$C_BOLD" "$C_RESET$C_BOLD" "$*$C_RESET"; }
 warn()  { printf '%s[!]%s %s\n' "$C_YELLOW$C_BOLD" "$C_RESET" "$*$C_BOLD" >&2; }
 err()   { printf '%s[x]%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$*$C_BOLD" >&2; }
-step()  { printf '\n%s── %s ──%s\n' "$C_MAGENTA$C_BOLD" "$*" "$C_RESET"; }
+step()  { printf '\n%s── %s ──%s\n' "$C_ACCENT" "$*" "$C_RESET"; }
 hr()    { printf '%s%s%s\n' "$C_DIM" "$(printf '─%.0s' {1..70})" "$C_RESET"; }
 banner() {
-    printf '%s%s\n' "$C_BOLD" "================================================================"
+    printf '%s%s\n' "$C_ACCENT" "================================================================"
     printf '  %s\n' "$*"
     printf '%s%s\n' "================================================================" "$C_RESET"
 }
 
+close_gauge() {
+    if [ "${GAUGE_FD_OPEN:-0}" -eq 1 ]; then
+        { exec 3>&-; } 2>/dev/null || true
+        GAUGE_FD_OPEN=0
+    fi
+    if [ -n "${GAUGE_PID:-}" ]; then
+        wait "$GAUGE_PID" 2>/dev/null || true
+        GAUGE_PID=""
+    fi
+    if [ -n "${GAUGE_FIFO:-}" ] && [ -p "$GAUGE_FIFO" ]; then
+        rm -f "$GAUGE_FIFO" 2>/dev/null || true
+        GAUGE_FIFO=""
+    fi
+}
+
 die() {
     trap - EXIT
+    close_gauge
+    if [ "${UI_MODE:-}" = "tui" ] && (have_whiptail || have_dialog); then
+        local err_msg="$*"
+        if [ -f "${INSTALL_LOG:-}" ] && [ -s "$INSTALL_LOG" ]; then
+            local log_tail
+            log_tail="$(tail -n 12 "$INSTALL_LOG" 2>/dev/null || true)"
+            err_msg="${err_msg}\n\nLast log lines (${INSTALL_LOG}):\n${log_tail}"
+        fi
+        if have_whiptail; then
+            whiptail --backtitle "$(current_backtitle)" --title "Installation Error" --msgbox "$err_msg" 20 74 || true
+        else
+            dialog --backtitle "$(current_backtitle)" --title "Installation Error" --msgbox "$err_msg" 20 74 || true
+        fi
+    fi
     err "$*"
     cleanup_mounts
     exit 1
@@ -206,12 +344,14 @@ trap 'on_interrupt' INT TERM
 trap 'cleanup_mounts' EXIT
 on_interrupt() {
     trap - EXIT
+    close_gauge
     err "Interrupted. Unmounting target and aborting."
     cleanup_mounts
     exit 130
 }
 
 cleanup_mounts() {
+    close_gauge
     # Tear down in reverse order, ignore errors.
     local idx mp=""
     for (( idx=${#MOUNT_POINTS[@]}-1 ; idx>=0 ; idx-- )); do
@@ -228,6 +368,10 @@ cleanup_mounts() {
     fi
     SWAP_ACTIVATED=0
     [ -d "$TARGET_ROOT" ] && rmdir "$TARGET_ROOT" 2>/dev/null || true
+    if [ -n "${DIALOGRC_FILE:-}" ] && [ -f "$DIALOGRC_FILE" ]; then
+        rm -f "$DIALOGRC_FILE" 2>/dev/null || true
+        DIALOGRC_FILE=""
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -343,12 +487,13 @@ have_dialog()  { command -v dialog  >/dev/null 2>&1; }
 
 tui_msg() {
     # tui_msg <title> <message>
-    local title="$1" msg="$2"
+    local title="$1" msg="$2" rc=0
     if have_whiptail; then
-        whiptail --title "$title" --msgbox "$msg" 16 72
+        whiptail --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 18 74 || rc=$?
     else
-        dialog --title "$title" --msgbox "$msg" 16 72
+        dialog --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 18 74 || rc=$?
     fi
+    [ "$rc" -eq 0 ] || die "Cancelled by user."
 }
 
 tui_yesno() {
@@ -360,32 +505,40 @@ tui_yesno() {
         extra+=(--defaultno)
     fi
     if have_whiptail; then
-        whiptail --title "$title" "${extra[@]}" --yesno "$text" 12 72 || rc=$?
+        whiptail --backtitle "$(current_backtitle)" --title "$title" "${extra[@]}" --yesno "$text" 12 74 || rc=$?
     else
-        dialog --title "$title" "${extra[@]}" --yesno "$text" 12 72 || rc=$?
+        dialog --backtitle "$(current_backtitle)" --title "$title" "${extra[@]}" --yesno "$text" 12 74 || rc=$?
     fi
-    if [ "$rc" -eq 0 ]; then REPLY="y"; else REPLY="n"; fi
+    if [ "$rc" -eq 255 ]; then
+        die "Cancelled by user."
+    elif [ "$rc" -eq 0 ]; then
+        REPLY="y"
+    else
+        REPLY="n"
+    fi
 }
 
 tui_input() {
     # tui_input <title> <text> <default> — sets REPLY
     local title="$1" text="$2" default="${3:-}" rc=0
     if have_whiptail; then
-        REPLY="$(whiptail --title "$title" --inputbox "$text" 10 72 "$default" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" --inputbox "$text" 11 74 "$default" 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --title "$title" --inputbox "$text" 10 72 "$default" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" --inputbox "$text" 11 74 "$default" 3>&1 1>&2 2>&3)" || rc=$?
     fi
     [ "$rc" -eq 0 ] || die "Cancelled by user."
-    [ -z "$REPLY" ] && REPLY="$default"
+    if [ -z "$REPLY" ]; then
+        REPLY="$default"
+    fi
 }
 
 tui_password() {
     # tui_password <title> <text> — sets REPLY
     local title="$1" text="$2" rc=0
     if have_whiptail; then
-        REPLY="$(whiptail --title "$title" --passwordbox "$text" 10 72 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" --passwordbox "$text" 11 74 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --title "$title" --passwordbox "$text" 10 72 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" --passwordbox "$text" 11 74 3>&1 1>&2 2>&3)" || rc=$?
     fi
     [ "$rc" -eq 0 ] || die "Cancelled by user."
 }
@@ -397,11 +550,36 @@ tui_menu() {
     local -a cmd_prefix=()
     [ -n "$default" ] && cmd_prefix=(--default-item "$default")
     if have_whiptail; then
-        REPLY="$(whiptail --title "$title" "${cmd_prefix[@]}" --menu "$text" 20 72 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" "${cmd_prefix[@]}" --menu "$text" 21 76 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --title "$title" "${cmd_prefix[@]}" --menu "$text" 20 72 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" "${cmd_prefix[@]}" --menu "$text" 21 76 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
     fi
     [ "$rc" -eq 0 ] || die "Cancelled by user."
+}
+
+open_gauge() {
+    local title="$1" init_msg="$2"
+    GAUGE_FIFO="$(mktemp -u "${TMPDIR:-/tmp}/install-system-gauge.XXXXXX")"
+    mkfifo "$GAUGE_FIFO"
+    if have_whiptail; then
+        whiptail --backtitle "$(current_backtitle)" --title "$title" --gauge "$init_msg" 10 74 0 < "$GAUGE_FIFO" &
+    else
+        dialog --backtitle "$(current_backtitle)" --title "$title" --gauge "$init_msg" 10 74 0 < "$GAUGE_FIFO" &
+    fi
+    GAUGE_PID=$!
+    exec 3> "$GAUGE_FIFO"
+    GAUGE_FD_OPEN=1
+}
+
+progress_update() {
+    local pct="$1" msg="$2"
+    if [ "$UI_MODE" = "tui" ] && [ "${GAUGE_FD_OPEN:-0}" -eq 1 ]; then
+        if [ -n "${GAUGE_PID:-}" ] && kill -0 "$GAUGE_PID" 2>/dev/null; then
+            printf 'XXX\n%d\n%s\nXXX\n' "$pct" "$msg" >&3 2>/dev/null || true
+        fi
+    elif [ "$UI_MODE" != "tui" ]; then
+        printf '%s[%3d%%]%s %s\n' "$C_ACCENT" "$pct" "$C_RESET" "$msg"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -415,7 +593,20 @@ ui_msg() {
         printf '%s%s%s\n\n' "$C_BOLD" "$t" "$C_RESET"
         printf '%s\n' "$*"
         printf 'Press Enter to continue... '
-        IFS= read -r _
+        IFS= read -r _ || die "Cancelled by user."
+    fi
+}
+ui_warn() {
+    if [ "$UI_MODE" = "tui" ]; then
+        local title="$1" msg="$2"
+        if have_whiptail; then
+            whiptail --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 12 74 || true
+        else
+            dialog --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 12 74 || true
+        fi
+    else
+        shift
+        warn "$*"
     fi
 }
 ui_yesno()    { if [ "$UI_MODE" = "tui" ]; then tui_yesno  "$@"; else local t="$1" m="$2" d="${3:-}"; text_yesno "$m" "$d"; fi }
@@ -431,7 +622,23 @@ require_root() {
     fi
 }
 
+is_live_session() {
+    if grep -qw 'boot=casper' /proc/cmdline 2>/dev/null; then
+        return 0
+    fi
+    local root_fstype=""
+    root_fstype="$(findmnt -n -o FSTYPE / 2>/dev/null || stat -f -c %T / 2>/dev/null || true)"
+    case "$root_fstype" in
+        overlay|overlayfs|aufs|tmpfs|squashfs) return 0 ;;
+    esac
+    return 1
+}
+
 check_live_env() {
+    if ! is_live_session; then
+        die "This system appears to be an installed system, not a live ISO session.
+The installer only runs from the live ISO environment."
+    fi
     if [ ! -f "$LIVE_SQUASHFS" ]; then
         die "Live squashfs not found at $LIVE_SQUASHFS.
 This installer must be run from the Ubuntu Vanilla Build live ISO.
@@ -446,21 +653,21 @@ If you booted a minimal/server ISO, use debootstrap instead."
 # STEP: welcome
 # -----------------------------------------------------------------------------
 step_welcome() {
-    banner "Welcome to the Ubuntu CLI Installer"
-    info "This installer copies the live system to your disk and configures"
-    info "users, locale, timezone, keyboard, GRUB, and packages."
-    info "It is fully interactive — every step asks before doing anything."
-    info "It only supports the 'Erase disk' and 'Manual partition' modes."
-    info "No LUKS encryption is offered in this version."
+    apply_installer_theme
+    STEP_LABEL="Step 1 of 7: Welcome"
+    banner "Welcome to the ${DISTRO_NAME} Installer"
+    info "This Ubiquity-style wizard installs ${DISTRO_NAME} onto your disk"
+    info "and configures language, keyboard, timezone, partitions, user, and GRUB."
+    info "Supports both fixed disk layout and manual partitioning (/, /boot/efi, swap)."
     hr
 
     if have_whiptail || have_dialog; then
-        text_choice "Choose the user interface:" 1 \
-            "TUI (whiptail/dialog boxes — recommended)" \
+        text_choice "Choose the installer interface:" 1 \
+            "TUI Wizard (Ubiquity-style boxes — recommended)" \
             "Plain text prompts"
         case "$REPLY" in
-            *TUI*|*whiptail*) UI_MODE="tui" ;;
-            *)                  UI_MODE="text" ;;
+            *TUI*|*Wizard*) UI_MODE="tui" ;;
+            *)              UI_MODE="text" ;;
         esac
     else
         UI_MODE="text"
@@ -468,9 +675,9 @@ step_welcome() {
     fi
 
     if [ "$UI_MODE" = "tui" ]; then
-        ui_msg "Welcome" "Welcome to the Ubuntu CLI Installer.\n\nThe installer will guide you through:\n  1. Locale & keyboard\n  2. Timezone\n  3. Disk target\n  4. User account\n  5. Installation\n  6. Reboot\n\nPress OK to continue."
+        ui_msg "Welcome to ${DISTRO_NAME}" "Welcome! Ready to install ${DISTRO_NAME}?\n\nThis wizard will walk you through:\n  1. Language & Locale\n  2. Keyboard Layout\n  3. Timezone (Where are you?)\n  4. Installation Type & Partitions (Fixed or Manual)\n  5. Who are you? (Account & Computer Name)\n  6. Ready to Install Summary\n  7. Automated Installation & Completion\n\nNothing is written to your disk until you confirm at the end.\n\nSelect OK to begin."
     else
-        ui_yesno "Start the installation now?" "y"
+        ui_yesno "Start the ${DISTRO_NAME} installation wizard now?" "y"
         [ "$REPLY" = "y" ] || die "Aborted by user at welcome screen."
     fi
 }
@@ -487,7 +694,8 @@ read_i18n_entries() {
 }
 
 step_locale() {
-    step "Locale"
+    STEP_LABEL="Step 2 of 7: Language & Locale"
+    step "Language & Locale"
     hr
     info "Choose your locale. Default if you press Enter: en_US.UTF-8"
     info "Tip: enter the language code (e.g. 'de_DE' or 'fr_FR') to filter."
@@ -601,7 +809,8 @@ EOF
 }
 
 step_keyboard() {
-    step "Keyboard"
+    STEP_LABEL="Step 3 of 7: Keyboard Layout"
+    step "Keyboard Layout"
     hr
     info "Choose your keyboard layout. Default if you press Enter: us"
 
@@ -701,7 +910,8 @@ EOF
 }
 
 step_timezone() {
-    step "Timezone"
+    STEP_LABEL="Step 4 of 7: Where are you? (Timezone)"
+    step "Where are you? (Timezone)"
     hr
 
     # Try NTP sync first if connected.
@@ -824,17 +1034,26 @@ list_block_devices() {
 }
 
 step_disk() {
-    step "Disk"
+    STEP_LABEL="Step 5 of 7: Installation Type & Partitions"
+    step "Installation Type & Partitions"
     hr
-    info "Choose how to partition the target disk."
+    info "Choose fixed default partitioning or manual partition assignment."
 
     if [ "$UI_MODE" = "tui" ]; then
-        tui_yesno "Erase disk" "Erase the entire disk and let the installer partition it?\n\nChoose No to drop into cfdisk for manual partitioning (advanced)."
-        DISK_MODE="erase"
-        [ "$REPLY" = "n" ] && DISK_MODE="manual"
+        tui_menu "Installation type" \
+            "How would you like to prepare your disk for ${DISTRO_NAME}?" \
+            "erase" \
+            "erase"  "Erase disk (fixed default: EFI + 4 GiB swap + ext4 /)" \
+            "manual" "Manual partitioning (choose /, /boot/efi, and optional swap)"
+        DISK_MODE="$REPLY"
     else
-        text_yesno $'Erase the entire disk and let the installer partition it?\n(Choose \'n\' to use manual partition mode.)' "y"
-        [ "$REPLY" = "y" ] && DISK_MODE="erase" || DISK_MODE="manual"
+        text_choice "Choose installation type:" 1 \
+            "Erase disk and install ${DISTRO_NAME} (fixed default GPT layout)" \
+            "Manual partitioning (cfdisk + choose /, /boot/efi, and optional swap)"
+        case "$REPLY" in
+            Erase*) DISK_MODE="erase" ;;
+            *)      DISK_MODE="manual" ;;
+        esac
     fi
 
     # List candidate disks
@@ -854,11 +1073,11 @@ step_disk() {
             human="$(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "$size")"
             args+=("$dev" "$human — $model")
         done < "$devmap"
-        tui_menu "Target disk" "Pick the disk to install onto" "${args[0]}" "${args[@]}"
+        tui_menu "Target disk" "Select the disk to install ${DISTRO_NAME} onto:" "${args[0]}" "${args[@]}"
         DISK_TARGET="$REPLY"
     else
         info "Available disks:"
-        local lines=() line dev size model
+        local lines=() dev size model
         while IFS=$'\t' read -r dev size model; do
             [ -z "$dev" ] && continue
             lines+=("$dev")
@@ -870,36 +1089,34 @@ step_disk() {
         if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
             DISK_TARGET="${lines[$((REPLY-1))]}"
         else
+            rm -f "$devmap"
             die "Invalid disk selection."
         fi
     fi
     rm -f "$devmap"
 
-    # Confirm destructive action
     if [ "$DISK_MODE" = "erase" ]; then
+        FORMAT_ROOT=1
+        ROOT_FSTYPE="ext4"
+        FORMAT_EFI=1
+        FORMAT_SWAP=1
+        EFI_PART=""
+        ROOT_PART=""
+        SWAP_PART=""
         if [ "$UI_MODE" = "tui" ]; then
-            tui_yesno "Confirm erase" "ALL DATA on $DISK_TARGET will be destroyed.\n\nProceed?" "n"
+            tui_yesno "Confirm erase disk" "ALL DATA on $DISK_TARGET will be erased when installation begins.\n\nFixed layout:\n  - 1 MiB BIOS boot (amd64)\n  - 512 MiB EFI System Partition (/boot/efi)\n  - 4 GiB swap\n  - Remainder ext4 root (/)\n\nUse this disk?" "n"
         else
-            text_yesno "ALL DATA on $DISK_TARGET will be destroyed. Proceed?" "n"
+            text_yesno "ALL DATA on $DISK_TARGET will be erased when installation begins. Use this disk?" "n"
         fi
         [ "$REPLY" = "y" ] || die "Aborted by user before partitioning."
     else
-        if [ "$UI_MODE" = "tui" ]; then
-            tui_msg "Manual partition" "You will be dropped into cfdisk on $DISK_TARGET.\n\nCreate at minimum:\n  • A 512 MiB EFI System Partition (type EFI)\n  • A root partition (type Linux filesystem)\n  • Optionally a swap partition\n\nWhen you exit cfdisk (Write → Quit), the installer will continue."
-        else
-            info "You will be dropped into cfdisk on $DISK_TARGET."
-            info "Create at minimum:"
-            info "  - A 512 MiB EFI System Partition (type EFI)"
-            info "  - A root partition (type Linux filesystem)"
-            info "  - Optionally a swap partition"
-            info "When you exit cfdisk (Write → Quit), the installer will continue."
-        fi
+        configure_manual_partitions "$DISK_TARGET"
     fi
     ok "Target disk: $DISK_TARGET ($DISK_MODE mode)"
 }
 
 # -----------------------------------------------------------------------------
-# STEP: user account
+# STEP: user account ("Who are you?")
 # -----------------------------------------------------------------------------
 validate_username() {
     local u="$1"
@@ -911,75 +1128,105 @@ validate_username() {
 }
 
 step_user() {
-    step "User account"
+    STEP_LABEL="Step 6 of 7: Who are you?"
+    step "Who are you?"
     hr
 
     # Full name
-    ui_input "Full name" "Enter the real name for the new user (or leave empty to skip)" ""
+    ui_input "Your name" "Enter your full name (or leave empty to skip)" ""
     FULLNAME="$REPLY"
+
+    # Computer name (hostname)
+    local def_host="ubuntu"
+    [ "$DISTRO_ID" = "pop" ] && def_host="pop-os"
+    while :; do
+        ui_input "Computer name" "Enter a hostname for this computer" "$def_host"
+        HOSTNAME="$REPLY"
+        [[ "$HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || { ui_warn "Invalid hostname" "Invalid hostname '$HOSTNAME'. Use letters, digits, and hyphens."; continue; }
+        break
+    done
 
     # Username
     while :; do
-        ui_input "Username" "Enter a username (lowercase, starts with a letter)" "user"
+        ui_input "Pick a username" "Enter a username (lowercase, starts with a letter)" "user"
         USERNAME="$REPLY"
         if validate_username "$USERNAME"; then break; fi
-        warn "Invalid username '$USERNAME'. Use lowercase letters/digits/'_'/'-', max 32 chars, not 'root' or system names."
+        ui_warn "Invalid username" "Invalid username '$USERNAME'. Use lowercase letters/digits/'_'/'-', max 32 chars, not 'root' or system names."
     done
 
     # Password (twice)
     while :; do
-        ui_password "Password" "Enter a password for $USERNAME (min 8 chars)"
+        ui_password "Choose a password" "Enter a password for $USERNAME (min 8 chars)"
         PASSWORD="$REPLY"
         if [ "${#PASSWORD}" -lt 8 ]; then
-            warn "Password must be at least 8 characters. Try again."
+            ui_warn "Invalid password" "Password must be at least 8 characters. Try again."
             continue
         fi
-        ui_password "Confirm password" "Re-enter the password to confirm"
+        ui_password "Confirm your password" "Re-enter the password to confirm"
         if [ "$REPLY" = "$PASSWORD" ]; then break; fi
-        warn "Passwords do not match. Try again."
+        ui_warn "Password mismatch" "Passwords do not match. Try again."
     done
 
-    # Hostname
-    while :; do
-        ui_input "Hostname" "Enter a hostname for this machine" "ubuntu"
-        HOSTNAME="$REPLY"
-        [[ "$HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || { warn "Invalid hostname."; continue; }
-        break
-    done
-
-    ok "User: $FULLNAME ($USERNAME) on $HOSTNAME"
+    ok "User: ${FULLNAME:-$USERNAME} ($USERNAME) on $HOSTNAME"
 }
 
 # -----------------------------------------------------------------------------
 # STEP: summary
 # -----------------------------------------------------------------------------
 step_summary() {
-    step "Summary"
+    STEP_LABEL="Step 7 of 7: Ready to Install"
+    step "Ready to Install"
     hr
+    local disk_plan=""
+    if [ "$DISK_MODE" = "erase" ]; then
+        disk_plan="$(cat <<EOF
+  Mode        : Fixed default (ERASE entire disk $DISK_TARGET)
+  Layout      : 512 MiB FAT32 (/boot/efi) + 4 GiB swap + ext4 (/)
+EOF
+)"
+    else
+        local root_act="keep existing" efi_act="none" swap_act="none"
+        [ "$FORMAT_ROOT" -eq 1 ] && root_act="format as ${ROOT_FSTYPE}"
+        if [ -n "$EFI_PART" ]; then
+            efi_act="${EFI_PART} ($([ "$FORMAT_EFI" -eq 1 ] && echo 'format FAT32' || echo 'keep FAT32'))"
+        fi
+        if [ -n "$SWAP_PART" ]; then
+            swap_act="${SWAP_PART} ($([ "$FORMAT_SWAP" -eq 1 ] && echo 'initialize swap' || echo 'reuse swap'))"
+        fi
+        disk_plan="$(cat <<EOF
+  Mode        : Manual partitioning ($DISK_TARGET)
+  Root (/)    : ${ROOT_PART} (${root_act})
+  EFI         : ${efi_act}
+  Swap        : ${swap_act}
+EOF
+)"
+    fi
+
     local summary
     summary="$(cat <<EOF
-Locale         : $LOCALE
-Keyboard       : $KEYBOARD_LAYOUT${KEYBOARD_VARIANT:+ ($KEYBOARD_VARIANT)}
-Timezone       : $TIMEZONE
+Distribution : ${DISTRO_NAME}
+Language     : $LOCALE
+Keyboard     : $KEYBOARD_LAYOUT${KEYBOARD_VARIANT:+ ($KEYBOARD_VARIANT)}
+Timezone     : $TIMEZONE
 
-Installation type : ${DISK_MODE}
-Target disk       : ${DISK_TARGET}
+Storage:
+${disk_plan}
 
-User:
-  Full name : $FULLNAME
-  Username  : $USERNAME
-  Hostname  : $HOSTNAME
+Account:
+  Full name  : ${FULLNAME:-"(none)"}
+  Username   : $USERNAME
+  Hostname   : $HOSTNAME
 
-A reboot will be issued after installation completes.
+When installation finishes, you can choose to restart or keep exploring.
 EOF
 )"
     if [ "$UI_MODE" = "tui" ]; then
-        tui_msg "Summary" "$summary"
+        tui_msg "Ready to install ${DISTRO_NAME}" "$summary"
     else
         printf '%s\n' "$summary"
     fi
 
-    ui_yesno "Proceed with installation?" "n"
+    ui_yesno "Begin installing ${DISTRO_NAME} now?" "n"
     [ "$REPLY" = "y" ] || die "Aborted by user at the summary step."
 }
 
@@ -1035,71 +1282,245 @@ partition_erase() {
     mkfs.ext4 -F -L root "$ROOT_PART" >/dev/null
 }
 
-select_partition_from_list() {
-    local role="$1" default_part="$2"; shift 2
+describe_partition() {
+    local part="$1"
+    local psize="" pfs="" plabel=""
+    psize="$(lsblk -dno SIZE "$part" 2>/dev/null | tr -d '[:space:]' || true)"
+    pfs="$(blkid -s TYPE -o value "$part" 2>/dev/null || true)"
+    plabel="$(blkid -s LABEL -o value "$part" 2>/dev/null || true)"
+    printf '%s — %s%s' "${psize:-?}" "${pfs:-unformatted}" "${plabel:+ [$plabel]}"
+}
+
+pick_partition_menu() {
+    # pick_partition_menu <title> <prompt> <default_tag> <include_none> <none_desc> <part>...
+    local title="$1" prompt="$2" default_tag="$3" include_none="$4" none_desc="$5"
+    shift 5
     local -a cands=("$@")
-    if [ "${#cands[@]}" -eq 1 ]; then
-        REPLY="${cands[0]}"
-        return 0
-    fi
     if [ "$UI_MODE" = "tui" ]; then
-        local args=() p fs
+        local args=() p
         for p in "${cands[@]}"; do
-            fs="$(blkid -s TYPE -o value "$p" 2>/dev/null || echo unknown)"
-            args+=("$p" "($fs)")
+            args+=("$p" "$(describe_partition "$p")")
         done
-        tui_menu "Select ${role} partition" "Multiple ${role} candidates found:" "$default_part" "${args[@]}"
+        if [ "$include_none" -eq 1 ]; then
+            args+=("__none__" "$none_desc")
+        fi
+        [ -n "$default_tag" ] || default_tag="${args[0]}"
+        tui_menu "$title" "$prompt" "$default_tag" "${args[@]}"
     else
-        text_choice "Multiple ${role} partitions found; choose one:" 1 "${cands[@]}"
+        local tags=() descs=() p idx=1 def_idx=1
+        for p in "${cands[@]}"; do
+            tags+=("$p")
+            descs+=("$(describe_partition "$p")")
+        done
+        if [ "$include_none" -eq 1 ]; then
+            tags+=("__none__")
+            descs+=("$none_desc")
+        fi
+        printf '%s%s%s\n' "$C_BOLD" "$prompt" "$C_RESET"
+        local i
+        for (( i=0; i<${#tags[@]}; i++ )); do
+            if [ "${tags[$i]}" = "$default_tag" ]; then
+                def_idx=$((i+1))
+            fi
+            printf '  %2d) %-18s (%s)\n' "$idx" "${tags[$i]}" "${descs[$i]}"
+            idx=$((idx+1))
+        done
+        while :; do
+            text_input "Choose partition by number" "$def_idx"
+            if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#tags[@]}" ]; then
+                REPLY="${tags[$((REPLY-1))]}"
+                return 0
+            fi
+            warn "Invalid partition selection."
+        done
     fi
 }
 
-partition_manual() {
+configure_manual_partitions() {
     local dev="$1"
-    info "Launching cfdisk on $dev. Create at minimum: an ESP, root, and (optionally) swap."
-    if ! command -v cfdisk >/dev/null 2>&1; then
-        die "cfdisk is not installed; cannot run manual partitioning."
+    local launch_cfdisk="y"
+    if [ "$UI_MODE" = "tui" ]; then
+        tui_yesno "Partition editor (cfdisk)" "Open cfdisk on $dev to create or edit partitions?\n\nChoose Yes to launch cfdisk (recommended if disk is blank),\nor No to assign existing partitions directly." "y"
+        launch_cfdisk="$REPLY"
+    else
+        text_yesno "Open cfdisk on $dev to create or edit partitions?" "y"
+        launch_cfdisk="$REPLY"
     fi
-    cfdisk "$dev" || true
-    partprobe "$dev" >/dev/null 2>&1 || true
-    sleep 1
-    udevadm settle >/dev/null 2>&1 || true
 
-    local parts=() efi_cands=() swap_cands=() root_cands=()
-    mapfile -t parts < <(lsblk -lnpo NAME,TYPE "$dev" | awk '$2 == "part" { print $1 }')
-    [ "${#parts[@]}" -ge 2 ] || die "Expected at least 2 partitions on $dev after manual partitioning."
+    if [ "$launch_cfdisk" = "y" ]; then
+        if ! command -v cfdisk >/dev/null 2>&1; then
+            die "cfdisk is not installed; cannot run manual partitioning."
+        fi
+        if [ "$UI_MODE" = "tui" ]; then
+            tui_msg "Manual partition (cfdisk)" "cfdisk will open on $dev.\n\nRecommended partitions:\n  - 512 MiB EFI System Partition (type: EFI System)\n  - Root partition (type: Linux filesystem)\n  - Optional swap partition (type: Linux swap)\n\nSelect Write then Quit when finished — you will choose /, /boot/efi, and swap paths next."
+        else
+            info "Launching cfdisk on $dev. Write then Quit when finished."
+        fi
+        cfdisk "$dev" || true
+        partprobe "$dev" >/dev/null 2>&1 || true
+        sleep 1
+        udevadm settle >/dev/null 2>&1 || true
+    fi
 
-    local p fstype
+    local parts=()
+    mapfile -t parts < <(lsblk -lnpo NAME,TYPE "$dev" 2>/dev/null | awk '$2 == "part" { print $1 }')
+    [ "${#parts[@]}" -ge 1 ] || die "No partitions found on $dev. Create partitions first and re-run."
+
+    # 1) Choose Root (/) partition
+    local default_root="" p cur_fs=""
     for p in "${parts[@]}"; do
-        fstype="$(blkid -s TYPE -o value "$p" 2>/dev/null || true)"
-        case "$fstype" in
-            vfat)           efi_cands+=("$p") ;;
-            swap)           swap_cands+=("$p") ;;
-            ext4|btrfs|xfs) root_cands+=("$p") ;;
-        esac
+        cur_fs="$(blkid -s TYPE -o value "$p" 2>/dev/null || true)"
+        if [[ "$cur_fs" =~ ^(ext4|btrfs|xfs)$ ]]; then
+            default_root="$p"
+            break
+        fi
     done
-
-    [ "${#efi_cands[@]}" -ge 1 ]  || die "Could not find an EFI System Partition (vfat) on $dev."
-    [ "${#root_cands[@]}" -ge 1 ] || die "Could not find a root partition (ext4/btrfs/xfs) on $dev."
-
-    select_partition_from_list "EFI" "${efi_cands[0]}" "${efi_cands[@]}"
-    EFI_PART="$REPLY"
-    select_partition_from_list "root" "${root_cands[0]}" "${root_cands[@]}"
+    pick_partition_menu "Root partition (/)" "Select the partition to mount as root (/):" "$default_root" 0 "" "${parts[@]}"
     ROOT_PART="$REPLY"
 
-    SWAP_PART=""
-    if [ "${#swap_cands[@]}" -ge 1 ]; then
-        select_partition_from_list "swap" "${swap_cands[0]}" "${swap_cands[@]}"
-        SWAP_PART="$REPLY"
+    cur_fs="$(blkid -s TYPE -o value "$ROOT_PART" 2>/dev/null || true)"
+    if [[ "$cur_fs" =~ ^(ext4|btrfs|xfs)$ ]]; then
+        if [ "$UI_MODE" = "tui" ]; then
+            tui_menu "Root filesystem" "$ROOT_PART already has a '$cur_fs' filesystem.\nKeep existing filesystem or format it?" "format_ext4" \
+                "format_ext4"  "Format as ext4 (recommended for clean install)" \
+                "format_btrfs" "Format as btrfs" \
+                "format_xfs"   "Format as xfs" \
+                "keep"         "Keep existing $cur_fs filesystem without formatting"
+        else
+            text_choice "$ROOT_PART currently has '$cur_fs'. Choose action:" 1 \
+                "format_ext4 (Format as ext4 — recommended)" \
+                "format_btrfs (Format as btrfs)" \
+                "format_xfs (Format as xfs)" \
+                "keep (Keep existing $cur_fs)"
+            REPLY="${REPLY%% *}"
+        fi
+    else
+        if [ "$UI_MODE" = "tui" ]; then
+            tui_menu "Root filesystem" "$ROOT_PART (${cur_fs:-unformatted}) needs a Linux filesystem.\nChoose filesystem to format $ROOT_PART:" "format_ext4" \
+                "format_ext4"  "Format as ext4 (recommended)" \
+                "format_btrfs" "Format as btrfs" \
+                "format_xfs"   "Format as xfs"
+        else
+            text_choice "Choose filesystem to format $ROOT_PART:" 1 \
+                "format_ext4" "format_btrfs" "format_xfs"
+        fi
+    fi
+    case "$REPLY" in
+        keep)         FORMAT_ROOT=0; ROOT_FSTYPE="$cur_fs" ;;
+        format_btrfs) FORMAT_ROOT=1; ROOT_FSTYPE="btrfs" ;;
+        format_xfs)   FORMAT_ROOT=1; ROOT_FSTYPE="xfs" ;;
+        *)            FORMAT_ROOT=1; ROOT_FSTYPE="ext4" ;;
+    esac
+
+    # 2) Choose EFI System Partition (/boot/efi)
+    local remaining_for_efi=() default_efi="" arch="" allow_no_efi=0
+    arch="$(host_arch)"
+    if [ "$arch" = "amd64" ] && [ ! -d /sys/firmware/efi ]; then
+        allow_no_efi=1
+    fi
+    for p in "${parts[@]}"; do
+        [ "$p" = "$ROOT_PART" ] && continue
+        remaining_for_efi+=("$p")
+        if [ -z "$default_efi" ]; then
+            cur_fs="$(blkid -s TYPE -o value "$p" 2>/dev/null || true)"
+            [ "$cur_fs" = "vfat" ] && default_efi="$p"
+        fi
+    done
+
+    EFI_PART=""
+    FORMAT_EFI=0
+    if [ "${#remaining_for_efi[@]}" -eq 0 ]; then
+        if [ "$allow_no_efi" -eq 0 ]; then
+            die "UEFI/ARM64 installation requires a separate EFI System Partition (/boot/efi) in addition to root (/)."
+        fi
+    else
+        while :; do
+            pick_partition_menu "EFI partition (/boot/efi)" "Select the EFI System Partition (/boot/efi):" "${default_efi:-${remaining_for_efi[0]}}" "$allow_no_efi" "Skip (legacy BIOS-only, no /boot/efi)" "${remaining_for_efi[@]}"
+            if [ "$REPLY" = "__none__" ]; then
+                EFI_PART=""
+                FORMAT_EFI=0
+                break
+            fi
+            EFI_PART="$REPLY"
+            cur_fs="$(blkid -s TYPE -o value "$EFI_PART" 2>/dev/null || true)"
+            if [ "$cur_fs" = "vfat" ]; then
+                if [ "$UI_MODE" = "tui" ]; then
+                    tui_menu "EFI partition format" "$EFI_PART already has a FAT32 (vfat) filesystem.\nFormat it or keep existing EFI boot files (e.g. dual-boot)?" "keep" \
+                        "keep"   "Keep existing FAT32 filesystem (recommended for dual-boot)" \
+                        "format" "Format $EFI_PART as FAT32"
+                else
+                    text_choice "$EFI_PART is already vfat:" 1 "keep (Keep existing FAT32)" "format (Format as FAT32)"
+                    REPLY="${REPLY%% *}"
+                fi
+                [ "$REPLY" = "format" ] && FORMAT_EFI=1 || FORMAT_EFI=0
+                break
+            else
+                ui_yesno "Format EFI partition" "$EFI_PART is currently '${cur_fs:-unformatted}'. Format it as FAT32 for /boot/efi?" "y"
+                if [ "$REPLY" = "y" ]; then
+                    FORMAT_EFI=1
+                    break
+                fi
+            fi
+        done
     fi
 
-    if [ -z "$SWAP_PART" ]; then
-        if [ "$UI_MODE" = "tui" ]; then
-            tui_yesno "Swap" "No swap partition detected. Continue without a swap partition?" "y"
-        else
-            text_yesno "No swap partition detected. Continue without a swap partition?" "y"
+    # 3) Choose optional Swap partition
+    local remaining_for_swap=() default_swap="__none__"
+    for p in "${parts[@]}"; do
+        [ "$p" = "$ROOT_PART" ] && continue
+        [ -n "$EFI_PART" ] && [ "$p" = "$EFI_PART" ] && continue
+        remaining_for_swap+=("$p")
+        if [ "$default_swap" = "__none__" ]; then
+            cur_fs="$(blkid -s TYPE -o value "$p" 2>/dev/null || true)"
+            [ "$cur_fs" = "swap" ] && default_swap="$p"
         fi
-        [ "$REPLY" = "y" ] || die "Aborted — add a swap partition in cfdisk and re-run."
+    done
+
+    SWAP_PART=""
+    FORMAT_SWAP=0
+    if [ "${#remaining_for_swap[@]}" -gt 0 ]; then
+        pick_partition_menu "Swap partition (optional)" "Select an optional swap partition (or None):" "$default_swap" 1 "None (do not use a swap partition)" "${remaining_for_swap[@]}"
+        if [ "$REPLY" != "__none__" ]; then
+            SWAP_PART="$REPLY"
+            cur_fs="$(blkid -s TYPE -o value "$SWAP_PART" 2>/dev/null || true)"
+            if [ "$cur_fs" = "swap" ]; then
+                FORMAT_SWAP=0
+            else
+                ui_yesno "Format swap" "$SWAP_PART (${cur_fs:-unformatted}) is not swap yet. Initialize as swap?" "y"
+                if [ "$REPLY" = "y" ]; then
+                    FORMAT_SWAP=1
+                else
+                    SWAP_PART=""
+                    FORMAT_SWAP=0
+                fi
+            fi
+        fi
+    fi
+}
+
+format_manual_partitions() {
+    [ -b "$ROOT_PART" ] || die "Root partition $ROOT_PART not found."
+    if [ "$FORMAT_ROOT" -eq 1 ]; then
+        info "Formatting root ($ROOT_PART) as $ROOT_FSTYPE..."
+        case "$ROOT_FSTYPE" in
+            btrfs) mkfs.btrfs -f -L root "$ROOT_PART" >/dev/null ;;
+            xfs)   mkfs.xfs -f -L root "$ROOT_PART" >/dev/null ;;
+            *)     mkfs.ext4 -F -L root "$ROOT_PART" >/dev/null ;;
+        esac
+    fi
+    if [ -n "$EFI_PART" ]; then
+        [ -b "$EFI_PART" ] || die "EFI partition $EFI_PART not found."
+        if [ "$FORMAT_EFI" -eq 1 ]; then
+            info "Formatting EFI ($EFI_PART) as FAT32..."
+            mkfs.fat -F32 -n EFI "$EFI_PART" >/dev/null
+        fi
+    fi
+    if [ -n "$SWAP_PART" ]; then
+        [ -b "$SWAP_PART" ] || die "Swap partition $SWAP_PART not found."
+        if [ "$FORMAT_SWAP" -eq 1 ]; then
+            info "Formatting swap ($SWAP_PART)..."
+            mkswap -L swap "$SWAP_PART" >/dev/null
+        fi
     fi
 }
 
@@ -1115,9 +1536,11 @@ mount_root_target() {
 
 mount_target_runtime() {
     info "Mounting target EFI and runtime filesystems under $TARGET_ROOT."
-    mkdir -p "$TARGET_ROOT/boot/efi"
-    mount "$EFI_PART" "$TARGET_ROOT/boot/efi"
-    MOUNT_POINTS+=("$TARGET_ROOT/boot/efi")
+    if [ -n "$EFI_PART" ]; then
+        mkdir -p "$TARGET_ROOT/boot/efi"
+        mount "$EFI_PART" "$TARGET_ROOT/boot/efi"
+        MOUNT_POINTS+=("$TARGET_ROOT/boot/efi")
+    fi
     if [ -n "$SWAP_PART" ]; then
         if swapon "$SWAP_PART"; then
             SWAP_ACTIVATED=1
@@ -1158,19 +1581,57 @@ mount_target_runtime() {
 }
 
 unpack_target() {
-    info "Unpacking live squashfs into $TARGET_ROOT (this can take several minutes)..."
+    if [ "$UI_MODE" = "tui" ]; then
+        printf '[i] Unpacking live squashfs into %s...\n' "$TARGET_ROOT" >> "$INSTALL_LOG"
+    else
+        info "Unpacking live squashfs into $TARGET_ROOT (this can take several minutes)..."
+    fi
     if command -v unsquashfs >/dev/null 2>&1; then
-        unsquashfs -d "$TARGET_ROOT" -f "$LIVE_SQUASHFS"
+        if [ "$UI_MODE" = "tui" ]; then
+            local expected_bytes=0 base_used=0
+            if [ -r "${LIVE_CDROM}/casper/filesystem.size" ]; then
+                expected_bytes="$(tr -dc '0-9' < "${LIVE_CDROM}/casper/filesystem.size" || true)"
+            fi
+            if [ -z "$expected_bytes" ] || [ "$expected_bytes" -le 0 ]; then
+                expected_bytes="$(stat -c %s "$LIVE_SQUASHFS" 2>/dev/null || echo 1000000000)"
+                expected_bytes=$(( expected_bytes * 3 ))
+            fi
+            base_used="$(df -B1 --output=used "$TARGET_ROOT" 2>/dev/null | tail -n1 | tr -dc '0-9' || echo 0)"
+            [ -n "$base_used" ] || base_used=0
+            unsquashfs -no-progress -d "$TARGET_ROOT" -f "$LIVE_SQUASHFS" >> "$INSTALL_LOG" 2>&1 &
+            local unsq_pid=$!
+            while kill -0 "$unsq_pid" 2>/dev/null; do
+                local cur_used=0 delta=0 pct=20
+                cur_used="$(df -B1 --output=used "$TARGET_ROOT" 2>/dev/null | tail -n1 | tr -dc '0-9' || echo 0)"
+                if [[ "$cur_used" =~ ^[0-9]+$ ]] && [ "$cur_used" -ge "$base_used" ]; then
+                    delta=$(( cur_used - base_used ))
+                    pct=$(( 18 + (delta * 37) / expected_bytes ))
+                    [ "$pct" -gt 55 ] && pct=55
+                    [ "$pct" -lt 18 ] && pct=18
+                fi
+                progress_update "$pct" "Copying system files to disk..."
+                sleep 1
+            done
+            wait "$unsq_pid"
+        else
+            unsquashfs -d "$TARGET_ROOT" -f "$LIVE_SQUASHFS"
+        fi
     else
         # Fallback: mount the squashfs and rsync.
         local tmp_mnt
         tmp_mnt="$(mktemp -d)"
-        mount -t squashfs -o loop "$LIVE_SQUASHFS" "$tmp_mnt"
-        rsync -aHAX --numeric-ids "$tmp_mnt"/ "$TARGET_ROOT"/
-        umount "$tmp_mnt"
+        {
+            mount -t squashfs -o loop "$LIVE_SQUASHFS" "$tmp_mnt"
+            rsync -aHAX --numeric-ids "$tmp_mnt"/ "$TARGET_ROOT"/
+            umount "$tmp_mnt"
+        } >> "$INSTALL_LOG" 2>&1
         rmdir "$tmp_mnt"
     fi
-    ok "Live filesystem unpacked."
+    if [ "$UI_MODE" = "tui" ]; then
+        printf '[+] Live filesystem unpacked.\n' >> "$INSTALL_LOG"
+    else
+        ok "Live filesystem unpacked."
+    fi
 }
 
 # Workaround for LP#1829805 (initramfs skipped on first run if /boot/initrd.img-*
@@ -1367,12 +1828,14 @@ install_bootloader() {
 
     info "Installing GRUB to $DISK_TARGET (arch=$arch, bootloader-id=$boot_id)."
 
-    if [ -d /sys/firmware/efi ] || [ "$arch" = "arm64" ]; then
+    if [ -n "$EFI_PART" ] && { [ -d /sys/firmware/efi ] || [ "$arch" = "arm64" ]; }; then
         chroot "$TARGET_ROOT" /bin/bash -c "
             set -e
             grub-install --target=${efi_target} --efi-directory=/boot/efi --bootloader-id=${boot_id} --recheck
             grub-install --target=${efi_target} --efi-directory=/boot/efi --bootloader-id=${boot_id} --removable --recheck
         "
+    elif [ -n "$EFI_PART" ] && [ "$arch" = "amd64" ]; then
+        chroot "$TARGET_ROOT" grub-install --target="${efi_target}" --efi-directory=/boot/efi --bootloader-id="${boot_id}" --no-nvram --removable --recheck 2>/dev/null || true
     fi
 
     if [ "$arch" = "amd64" ]; then
@@ -1386,10 +1849,10 @@ install_bootloader() {
     run_in_chroot "grub-mkconfig -o /boot/grub/grub.cfg"
 }
 
-# Equivalent of calamares 'packages' (strip live-only packages; try_install
-# language packs for the chosen locale).
+# Equivalent of calamares 'packages' (strip live-only packages and installer files;
+# try_install language packs for the chosen locale).
 strip_live_packages() {
-    info "Removing live-only packages from the target."
+    info "Removing live-only packages and installer files from the target."
     chroot "$TARGET_ROOT" /bin/bash <<'CHROOT_EOF'
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -1404,6 +1867,14 @@ if [ "${#to_purge[@]}" -gt 0 ]; then
 fi
 apt-get -y autoremove --purge || true
 CHROOT_EOF
+    rm -f "$TARGET_ROOT/usr/local/bin/install-system" \
+          "$TARGET_ROOT/etc/profile.d/99-uvb-live-cli.sh" \
+          "$TARGET_ROOT/etc/casper.conf" \
+          "$TARGET_ROOT/etc/ssh/sshd_config.d/01-uvb-live-ssh.conf" \
+          "$TARGET_ROOT/usr/local/sbin/uvb-live-ssh-setup" \
+          "$TARGET_ROOT/etc/systemd/system/uvb-live-ssh-user.service" \
+          "$TARGET_ROOT/etc/systemd/system/multi-user.target.wants/uvb-live-ssh-user.service"
+    rm -rf "$TARGET_ROOT/etc/calamares"
     info "Installing language packs for $LOCALE (best-effort, online only)."
     local short="${LOCALE%.*}"           # en_US.UTF-8 -> en_US
     local lang="${short%_*}"             # en_US -> en
@@ -1437,49 +1908,113 @@ umount_target() {
     [ -d "$TARGET_ROOT" ] && rmdir "$TARGET_ROOT" 2>/dev/null || true
 }
 
-run_installation() {
-    step "Installation"
-    hr
-
-    if [ "$DISK_MODE" = "erase" ]; then
-        partition_erase "$DISK_TARGET"
+run_step_logged() {
+    local pct="$1" msg="$2"
+    shift 2
+    CURRENT_INSTALL_STEP="$msg"
+    progress_update "$pct" "$msg"
+    if [ "$UI_MODE" = "tui" ]; then
+        "$@" >> "$INSTALL_LOG" 2>&1
     else
-        partition_manual "$DISK_TARGET"
+        "$@" 2>&1 | tee -a "$INSTALL_LOG"
+    fi
+}
+
+run_installation() {
+    STEP_LABEL="Installing ${DISTRO_NAME}"
+    CURRENT_INSTALL_STEP="Preparing installation"
+    if ! (: > "$INSTALL_LOG") 2>/dev/null; then
+        INSTALL_LOG="$(mktemp /tmp/install-system-log.XXXXXX)"
     fi
 
-    mount_root_target
-    unpack_target
-    mount_target_runtime
-    configure_machineid
-    configure_fstab
-    configure_locale
-    configure_keyboard
-    chroot_initramfs_touch
-    create_user
-    configure_displaymanager
-    configure_network
-    configure_hwclock
-    configure_initramfs
-    configure_grubcfg
-    install_bootloader
-    strip_live_packages
-    umount_target
+    if [ "$UI_MODE" = "tui" ]; then
+        open_gauge "Installing ${DISTRO_NAME}" "Preparing installation..."
+    else
+        step "Installing ${DISTRO_NAME}"
+        hr
+    fi
 
-    ok "Installation complete."
+    trap 'die "Installation failed during: ${CURRENT_INSTALL_STEP:-unknown}"' ERR
+
+    if [ "$DISK_MODE" = "erase" ]; then
+        run_step_logged 5 "Partitioning and formatting ${DISK_TARGET}..." partition_erase "$DISK_TARGET"
+    else
+        run_step_logged 5 "Preparing selected partitions on ${DISK_TARGET}..." format_manual_partitions
+    fi
+
+    run_step_logged 12 "Mounting target root filesystem (${ROOT_PART})..." mount_root_target
+
+    CURRENT_INSTALL_STEP="Copying system files to disk"
+    progress_update 18 "Copying system files to disk..."
+    if [ "$UI_MODE" = "tui" ]; then
+        unpack_target
+    else
+        unpack_target 2>&1 | tee -a "$INSTALL_LOG"
+    fi
+
+    run_step_logged 58 "Mounting EFI and virtual filesystems..." mount_target_runtime
+    run_step_logged 62 "Generating machine ID and /etc/fstab..." configure_machineid
+    run_step_logged 65 "Writing /etc/fstab..." configure_fstab
+    run_step_logged 68 "Configuring locale (${LOCALE}) and timezone (${TIMEZONE})..." configure_locale
+    run_step_logged 73 "Configuring keyboard layout (${KEYBOARD_LAYOUT})..." configure_keyboard
+    run_step_logged 76 "Preparing kernel initramfs hooks..." chroot_initramfs_touch
+    run_step_logged 79 "Creating user account (${USERNAME})..." create_user
+    run_step_logged 82 "Configuring display manager and network..." configure_displaymanager
+    run_step_logged 85 "Writing target network configuration..." configure_network
+    run_step_logged 87 "Synchronizing hardware clock..." configure_hwclock
+    run_step_logged 90 "Generating initramfs images..." configure_initramfs
+    run_step_logged 93 "Configuring and installing GRUB bootloader..." configure_grubcfg
+    run_step_logged 95 "Installing GRUB bootloader to ${DISK_TARGET}..." install_bootloader
+    run_step_logged 98 "Removing live-only packages and installer files..." strip_live_packages
+    run_step_logged 99 "Unmounting target filesystems..." umount_target
+    sync
+
+    trap - ERR
+    progress_update 100 "Installation complete!"
+    if [ "$UI_MODE" = "tui" ]; then
+        sleep 0.6
+        close_gauge
+    else
+        ok "Installation complete."
+    fi
 }
 
 # -----------------------------------------------------------------------------
 # STEP: finished
 # -----------------------------------------------------------------------------
 step_finished() {
-    step "Finished"
-    banner "Installation complete — rebooting now"
-    info "The system has been installed on $DISK_TARGET."
-    info "Removing the live USB and rebooting into the new system..."
-    sync
-    # Reboot into the new system (Calamares uses 'systemctl -i reboot').
-    sleep 3
-    systemctl -i reboot || reboot
+    STEP_LABEL="Installation Complete"
+    if [ "$UI_MODE" != "tui" ]; then
+        step "Installation Complete"
+    fi
+
+    local action="restart"
+    if [ "$UI_MODE" = "tui" ]; then
+        tui_menu "Installation Complete" \
+            "${DISTRO_NAME} has been installed on ${DISK_TARGET}.\n\nYou can continue testing the live environment, or restart now to boot into your new ${DISTRO_NAME} system." \
+            "restart" \
+            "restart"  "Restart Now (recommended)" \
+            "continue" "Continue Testing / Exploring Live System"
+        action="$REPLY"
+    else
+        banner "Installation complete!"
+        info "${DISTRO_NAME} has been installed on ${DISK_TARGET}."
+        text_choice "What would you like to do next?" 1 \
+            "Restart Now" \
+            "Continue Testing / Exploring Live System"
+        case "$REPLY" in
+            Restart*) action="restart" ;;
+            *)        action="continue" ;;
+        esac
+    fi
+
+    if [ "$action" = "restart" ]; then
+        info "Rebooting into the new ${DISTRO_NAME} system..."
+        sleep 1
+        systemctl -i reboot || reboot
+    else
+        ok "Continuing in live mode. Target filesystems are unmounted; run 'sudo reboot' when ready."
+    fi
 }
 
 # -----------------------------------------------------------------------------

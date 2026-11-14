@@ -813,13 +813,30 @@ EOF
         echo "=====> fwupd: not pre-installed (blocked during build; 'sudo apt install fwupd' works after install)"
     fi
 
+    if [[ "$UVB_OUTPUT_KIND" == "iso" ]]; then
+        local live_user="ubuntu" live_host="ubuntu" live_pass="ubuntu" live_sys="Ubuntu"
+        if [[ "$UVB_DISTRO" == "popos" ]]; then
+            live_user="popos"
+            live_host="popos"
+            live_pass="popos"
+            live_sys="Pop!_OS"
+        fi
+        cat <<EOF > /etc/casper.conf
+# Written by ubuntu-vanilla-build
+export USERNAME="${live_user}"
+export USERFULLNAME="Live session user"
+export HOST="${live_host}"
+export BUILD_SYSTEM="${live_sys}"
+EOF
+    fi
+
     if [[ "${TARGET_OPENSSH_SERVER:-0}" == "1" ]]; then
         echo "=====> OpenSSH server: pre-installing"
         apt-get install -y openssh-server
         cat <<'EOF' > /etc/systemd/system/ssh-host-keys-regen.service
 [Unit]
 Description=Regenerate missing SSH host keys
-Before=ssh.service
+Before=ssh.service ssh.socket
 ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
 
 [Service]
@@ -831,6 +848,42 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
         systemctl enable ssh-host-keys-regen.service
+
+        if [[ "$UVB_OUTPUT_KIND" == "iso" ]]; then
+            echo "=====> OpenSSH server (live ISO): enabling ${live_user}@${live_host} (password: ${live_pass})"
+            install -d /etc/ssh/sshd_config.d /usr/local/sbin
+            cat <<'EOF' > /etc/ssh/sshd_config.d/01-uvb-live-ssh.conf
+# Live ISO SSH password login (removed on target installation)
+PasswordAuthentication yes
+KbdInteractiveAuthentication yes
+EOF
+            cat <<EOF > /usr/local/sbin/uvb-live-ssh-setup
+#!/bin/bash
+set -eu
+grep -qw 'boot=casper' /proc/cmdline || exit 0
+if id "${live_user}" >/dev/null 2>&1; then
+    printf '%s:%s\n' "${live_user}" "${live_pass}" | chpasswd
+    passwd -u "${live_user}" >/dev/null 2>&1 || true
+fi
+EOF
+            chmod 0755 /usr/local/sbin/uvb-live-ssh-setup
+            cat <<'EOF' > /etc/systemd/system/uvb-live-ssh-user.service
+[Unit]
+Description=Configure live ISO SSH password for live user
+ConditionKernelCommandLine=boot=casper
+After=systemd-user-sessions.service
+Before=ssh.service ssh.socket cockpit.socket
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/uvb-live-ssh-setup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            systemctl enable uvb-live-ssh-user.service
+        fi
     else
         echo "=====> OpenSSH server: not pre-installed"
     fi
@@ -1021,6 +1074,7 @@ function host_abort_cleanup() {
 function host_build_exit_trap() {
     local _st=$?
     cleanup_sudo_keepalive || true
+    uvb_cleanup_dialogrc || true
     if [[ "$_st" -ne 0 ]] && [[ "${HOST_ABORT_CLEANUP_DONE:-0}" -eq 0 ]]; then
         host_abort_cleanup
     fi
@@ -2593,6 +2647,7 @@ function host_main() {
     fi
 
     resolve_ui_mode
+    uvb_apply_tui_theme "${UVB_DISTRO:-ubuntu}"
 
     # Re-apply explicit CLI flags so CLI > config > env > prompts > defaults holds everywhere.
     [[ -n "$cli_hooks_dir" ]]          && HOOKS_DIR="$cli_hooks_dir"

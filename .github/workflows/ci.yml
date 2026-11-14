@@ -57,6 +57,11 @@ jobs:
           for wf in sorted(Path(".github/workflows").glob("*.yml")):
               data = yaml.safe_load(wf.read_text(encoding="utf-8"))
               assert isinstance(data, dict) and "jobs" in data, f"Invalid workflow: {wf}"
+              # PyYAML parses unquoted `on:` as boolean True; check workflow_dispatch input cap (<= 25).
+              triggers = data.get(True) or data.get("on") or {}
+              wd = triggers.get("workflow_dispatch") if isinstance(triggers, dict) else None
+              if isinstance(wd, dict) and isinstance(wd.get("inputs"), dict):
+                  assert len(wd["inputs"]) <= 25, f"{wf} exceeds GitHub Actions 25-input limit ({len(wd['inputs'])})"
 
           for base_name, brand in [("calamares", "ubuntu"), ("calamares-popos", "pop")]:
               base = Path("scripts") / base_name
