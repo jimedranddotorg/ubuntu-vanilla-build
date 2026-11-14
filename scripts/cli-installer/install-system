@@ -1,28 +1,23 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# ubuntu-cli-installer.sh — TTY/CLI-based Ubuntu installer for the
-# Ubuntu Vanilla Build live ISO. Mirrors the Calamares module sequence
-# defined in scripts/calamares/settings.conf:
+# install-system — Ubiquity-style TUI/CLI installer for Ubuntu & Pop!_OS
+# live ISOs (installed at /usr/local/bin/install-system). Mirrors the
+# Calamares module sequence in scripts/calamares/settings.conf:
 #
-#   welcome → locale → keyboard → partition → users → summary
+#   welcome → locale → keyboard → timezone → disk/partitions → users → summary
 #     → partition → mount → unpackfs → machineid → fstab → locale
 #     → keyboard → localecfg → users → displaymanager → networkcfg
 #     → hwclock → initramfscfg → initramfs → grubcfg → bootloader
-#     → packages → umount → finished
+#     → packages/cleanup → umount → finished (Restart Now / Continue Testing)
 #
 # Usage (interactive, on the live ISO):
-#   sudo ./ubuntu-cli-installer.sh
+#   sudo install-system
 #
-# The script is strictly interactive by design — every step asks the user
-# on the TTY (text mode) or in whiptail/dialog boxes (TUI mode, picked
-# once at the welcome screen).
-#
-# The script assumes it is running from the live ISO (casper). It looks
-# for the squashfs at /cdrom/casper/filesystem.squashfs and aborts with a
-# clear error if it is not present.
+# The script assumes it is running from the live ISO (casper). It verifies
+# both a live session (/proc/cmdline boot=casper or overlay root) and the
+# squashfs at /cdrom/casper/filesystem.squashfs before modifying anything.
 
 set -Eeuo pipefail
-shopt -s nocasematch
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -741,13 +736,18 @@ step_locale() {
             [ "${#lines[@]}" -gt 0 ] || continue
             # Show a numbered list and ask the user to pick by index.
             info "Matching locales:"
-            local i=1
+            local i=1 def_idx=1
             while IFS=$'\t' read -r tag pretty; do
                 [ -z "$tag" ] && continue
-                printf '  %3d) %s\n' "$i" "$tag"
+                if [ "$tag" = "$default_locale" ]; then
+                    def_idx="$i"
+                    printf '  %3d) %s (default)\n' "$i" "$tag"
+                else
+                    printf '  %3d) %s\n' "$i" "$tag"
+                fi
                 i=$((i+1))
             done <<< "$filtered"
-            text_input "Choose a locale by number" "1"
+            text_input "Choose a locale by number" "$def_idx"
             if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
                 LANG_CHOICE="${lines[$((REPLY-1))]}"
                 break
@@ -767,43 +767,42 @@ step_locale() {
 # STEP: keyboard
 # -----------------------------------------------------------------------------
 read_xkb_layouts() {
-    # Whiptail/dialog menu doesn't know XKB names, so we ship a curated short
-    # list and let the user type a custom layout if they want.
+    # Valid XKB layout codes (optional :variant, e.g. ch:fr) from xkb-data base.lst.
     cat <<'EOF'
 us	English (US)
 gb	English (UK)
 de	German
-de_CH	German (Switzerland)
+ch	German (Switzerland)
 fr	French
-fr_CH	French (Switzerland)
+ch:fr	French (Switzerland)
 it	Italian
 es	Spanish
 pt	Portuguese
-pt_BR	Portuguese (Brazil)
+br	Portuguese (Brazil)
 nl	Dutch
 ru	Russian
-uk	Ukrainian
+ua	Ukrainian
 pl	Polish
-cs	Czech
+cz	Czech
 sk	Slovak
 ro	Romanian
 hu	Hungarian
-el	Greek
+gr	Greek
 tr	Turkish
-sv	Swedish
-da	Danish
+se	Swedish
+dk	Danish
 no	Norwegian
 fi	Finnish
 is	Icelandic
-ja	Japanese
-ko	Korean
-zh_CN	Chinese (Simplified)
-zh_TW	Chinese (Traditional)
-ar	Arabic
-he	Hebrew
-hi	Devanagari/Hindi
+jp	Japanese
+kr	Korean
+cn	Chinese (Simplified)
+tw	Chinese (Traditional)
+ara	Arabic
+il	Hebrew
+in	Indian / Devanagari
 th	Thai
-vi	Vietnamese
+vn	Vietnamese
 id	Indonesian
 EOF
 }
@@ -814,7 +813,7 @@ step_keyboard() {
     hr
     info "Choose your keyboard layout. Default if you press Enter: us"
 
-    local default_layout="us"
+    local default_layout="us" raw_kb=""
     if [ "$UI_MODE" = "tui" ]; then
         local args=() tag pretty
         while IFS=$'\t' read -r tag pretty; do
@@ -822,7 +821,7 @@ step_keyboard() {
             args+=("$tag" "$pretty")
         done < <(read_xkb_layouts)
         tui_menu "Keyboard" "Pick a keyboard layout (default: us)" "$default_layout" "${args[@]}"
-        KEYBOARD_LAYOUT="$REPLY"
+        raw_kb="$REPLY"
     else
         info "Common layouts:"
         local lines=() tag pretty
@@ -838,13 +837,19 @@ step_keyboard() {
         done < <(read_xkb_layouts)
         text_input "Choose a layout by number, or type a custom XKB name" "1"
         if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
-            KEYBOARD_LAYOUT="${lines[$((REPLY-1))]}"
+            raw_kb="${lines[$((REPLY-1))]}"
         else
-            KEYBOARD_LAYOUT="$REPLY"
+            raw_kb="$REPLY"
         fi
     fi
-    KEYBOARD_VARIANT=""
-    ok "Keyboard layout: $KEYBOARD_LAYOUT"
+    if [[ "$raw_kb" == *:* ]]; then
+        KEYBOARD_LAYOUT="${raw_kb%%:*}"
+        KEYBOARD_VARIANT="${raw_kb#*:}"
+    else
+        KEYBOARD_LAYOUT="$raw_kb"
+        KEYBOARD_VARIANT=""
+    fi
+    ok "Keyboard layout: $KEYBOARD_LAYOUT${KEYBOARD_VARIANT:+ (variant: $KEYBOARD_VARIANT)}"
 }
 
 # -----------------------------------------------------------------------------
@@ -1043,7 +1048,7 @@ step_disk() {
         tui_menu "Installation type" \
             "How would you like to prepare your disk for ${DISTRO_NAME}?" \
             "erase" \
-            "erase"  "Erase disk (fixed default: EFI + 4 GiB swap + ext4 /)" \
+            "erase"  "Erase disk (fixed default: EFI + 4 GiB swap + selectable root /)" \
             "manual" "Manual partitioning (choose /, /boot/efi, and optional swap)"
         DISK_MODE="$REPLY"
     else
@@ -1096,17 +1101,17 @@ step_disk() {
     rm -f "$devmap"
 
     if [ "$DISK_MODE" = "erase" ]; then
+        choose_root_filesystem 0 ""
         FORMAT_ROOT=1
-        ROOT_FSTYPE="ext4"
         FORMAT_EFI=1
         FORMAT_SWAP=1
         EFI_PART=""
         ROOT_PART=""
         SWAP_PART=""
         if [ "$UI_MODE" = "tui" ]; then
-            tui_yesno "Confirm erase disk" "ALL DATA on $DISK_TARGET will be erased when installation begins.\n\nFixed layout:\n  - 1 MiB BIOS boot (amd64)\n  - 512 MiB EFI System Partition (/boot/efi)\n  - 4 GiB swap\n  - Remainder ext4 root (/)\n\nUse this disk?" "n"
+            tui_yesno "Confirm erase disk" "ALL DATA on $DISK_TARGET will be erased when installation begins.\n\nFixed layout:\n  - 1 MiB BIOS boot (amd64)\n  - 512 MiB EFI System Partition (/boot/efi)\n  - 4 GiB swap\n  - Remainder ${ROOT_FSTYPE} root (/)\n\nUse this disk?" "n"
         else
-            text_yesno "ALL DATA on $DISK_TARGET will be erased when installation begins. Use this disk?" "n"
+            text_yesno "ALL DATA on $DISK_TARGET will be erased when installation begins (${ROOT_FSTYPE} root). Use this disk?" "n"
         fi
         [ "$REPLY" = "y" ] || die "Aborted by user before partitioning."
     else
@@ -1181,7 +1186,7 @@ step_summary() {
     if [ "$DISK_MODE" = "erase" ]; then
         disk_plan="$(cat <<EOF
   Mode        : Fixed default (ERASE entire disk $DISK_TARGET)
-  Layout      : 512 MiB FAT32 (/boot/efi) + 4 GiB swap + ext4 (/)
+  Layout      : 512 MiB FAT32 (/boot/efi) + 4 GiB swap + ${ROOT_FSTYPE} (/)
 EOF
 )"
     else
@@ -1233,11 +1238,27 @@ EOF
 # -----------------------------------------------------------------------------
 # PARTITIONING (Calmares 'partition' module equivalent)
 # -----------------------------------------------------------------------------
+deactivate_disk_holders() {
+    local dev="$1"
+    local p mnt=""
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        mnt="$(findmnt -rn -S "$p" -o TARGET 2>/dev/null || true)"
+        if [ -n "$mnt" ]; then
+            if [ "$mnt" = "$LIVE_CDROM" ] || [[ "$mnt" == /cdrom* ]]; then
+                die "Target disk $dev holds the live ISO mount ($mnt); choose a different disk."
+            fi
+        fi
+        swapoff "$p" 2>/dev/null || true
+    done < <(lsblk -lnpo NAME "$dev" 2>/dev/null || true)
+}
+
 partition_erase() {
     local dev="$1"
     local arch
     arch="$(host_arch)"
 
+    deactivate_disk_holders "$dev"
     wipefs -af "$dev" >/dev/null 2>&1 || true
     sgdisk --zap-all "$dev" >/dev/null
 
@@ -1278,8 +1299,93 @@ partition_erase() {
     mkfs.fat -F32 -n EFI "$EFI_PART" >/dev/null
     info "Formatting swap ($SWAP_PART)..."
     mkswap -L swap "$SWAP_PART" >/dev/null
-    info "Formatting root ($ROOT_PART) as ext4..."
-    mkfs.ext4 -F -L root "$ROOT_PART" >/dev/null
+    format_root_partition "$ROOT_PART" "$ROOT_FSTYPE"
+}
+
+available_root_filesystems() {
+    local fs
+    for fs in ext4 btrfs xfs ext3 ext2 f2fs jfs; do
+        if command -v "mkfs.${fs}" >/dev/null 2>&1; then
+            printf '%s\n' "$fs"
+        fi
+    done
+}
+
+describe_root_filesystem() {
+    case "$1" in
+        ext4)  echo "ext4 — Standard Linux journaling filesystem (recommended)" ;;
+        btrfs) echo "btrfs — Copy-on-write filesystem with snapshots" ;;
+        xfs)   echo "xfs — High-performance 64-bit journaling filesystem" ;;
+        ext3)  echo "ext3 — Legacy journaling ext filesystem" ;;
+        ext2)  echo "ext2 — Legacy non-journaling ext filesystem" ;;
+        f2fs)  echo "f2fs — Flash-Friendly File System (SSD/NVMe/flash)" ;;
+        jfs)   echo "jfs — IBM Journaled File System" ;;
+        *)     echo "$1" ;;
+    esac
+}
+
+choose_root_filesystem() {
+    # choose_root_filesystem <allow_keep 0|1> [<existing_fs>]
+    # Sets FORMAT_ROOT and ROOT_FSTYPE.
+    local allow_keep="$1" existing_fs="${2:-}"
+    local -a fs_list=()
+    mapfile -t fs_list < <(available_root_filesystems)
+    [ "${#fs_list[@]}" -ge 1 ] || die "No supported mkfs.* root filesystem tools found."
+
+    local prompt="Choose filesystem to format root (/):"
+    if [ "$allow_keep" -eq 1 ] && [ -n "$existing_fs" ]; then
+        prompt="Selected root partition already has '${existing_fs}'.\nChoose a filesystem to format it, or keep existing:"
+    fi
+
+    if [ "$UI_MODE" = "tui" ]; then
+        local args=() fs
+        for fs in "${fs_list[@]}"; do
+            args+=("format_${fs}" "$(describe_root_filesystem "$fs")")
+        done
+        if [ "$allow_keep" -eq 1 ] && [ -n "$existing_fs" ]; then
+            args+=("keep" "Keep existing ${existing_fs} filesystem without formatting")
+        fi
+        tui_menu "Root (/) filesystem" "$prompt" "format_${fs_list[0]}" "${args[@]}"
+    else
+        local tags=() choices=() fs
+        for fs in "${fs_list[@]}"; do
+            tags+=("format_${fs}")
+            choices+=("${fs} — $(describe_root_filesystem "$fs")")
+        done
+        if [ "$allow_keep" -eq 1 ] && [ -n "$existing_fs" ]; then
+            tags+=("keep")
+            choices+=("keep — Keep existing ${existing_fs} without formatting")
+        fi
+        text_choice "Choose root (/) filesystem:" 1 "${choices[@]}"
+        local idx=0
+        for (( idx=0; idx<${#choices[@]}; idx++ )); do
+            if [ "${choices[$idx]}" = "$REPLY" ]; then
+                REPLY="${tags[$idx]}"
+                break
+            fi
+        done
+    fi
+
+    if [ "$REPLY" = "keep" ] && [ -n "$existing_fs" ]; then
+        FORMAT_ROOT=0
+        ROOT_FSTYPE="$existing_fs"
+    else
+        FORMAT_ROOT=1
+        ROOT_FSTYPE="${REPLY#format_}"
+    fi
+}
+
+format_root_partition() {
+    local part="$1" fstype="$2"
+    info "Formatting root ($part) as $fstype..."
+    case "$fstype" in
+        ext4|ext3|ext2) "mkfs.${fstype}" -F -L root "$part" >/dev/null ;;
+        btrfs)          mkfs.btrfs -f -L root "$part" >/dev/null ;;
+        xfs)            mkfs.xfs -f -L root "$part" >/dev/null ;;
+        f2fs)           mkfs.f2fs -f -l root "$part" >/dev/null ;;
+        jfs)            mkfs.jfs -q -L root "$part" >/dev/null ;;
+        *)              die "Unsupported root filesystem: $fstype" ;;
+    esac
 }
 
 describe_partition() {
@@ -1370,7 +1476,7 @@ configure_manual_partitions() {
     local default_root="" p cur_fs=""
     for p in "${parts[@]}"; do
         cur_fs="$(blkid -s TYPE -o value "$p" 2>/dev/null || true)"
-        if [[ "$cur_fs" =~ ^(ext4|btrfs|xfs)$ ]]; then
+        if [[ "$cur_fs" =~ ^(ext4|ext3|ext2|btrfs|xfs|f2fs|jfs)$ ]]; then
             default_root="$p"
             break
         fi
@@ -1379,38 +1485,11 @@ configure_manual_partitions() {
     ROOT_PART="$REPLY"
 
     cur_fs="$(blkid -s TYPE -o value "$ROOT_PART" 2>/dev/null || true)"
-    if [[ "$cur_fs" =~ ^(ext4|btrfs|xfs)$ ]]; then
-        if [ "$UI_MODE" = "tui" ]; then
-            tui_menu "Root filesystem" "$ROOT_PART already has a '$cur_fs' filesystem.\nKeep existing filesystem or format it?" "format_ext4" \
-                "format_ext4"  "Format as ext4 (recommended for clean install)" \
-                "format_btrfs" "Format as btrfs" \
-                "format_xfs"   "Format as xfs" \
-                "keep"         "Keep existing $cur_fs filesystem without formatting"
-        else
-            text_choice "$ROOT_PART currently has '$cur_fs'. Choose action:" 1 \
-                "format_ext4 (Format as ext4 — recommended)" \
-                "format_btrfs (Format as btrfs)" \
-                "format_xfs (Format as xfs)" \
-                "keep (Keep existing $cur_fs)"
-            REPLY="${REPLY%% *}"
-        fi
+    if [[ "$cur_fs" =~ ^(ext4|ext3|ext2|btrfs|xfs|f2fs|jfs)$ ]]; then
+        choose_root_filesystem 1 "$cur_fs"
     else
-        if [ "$UI_MODE" = "tui" ]; then
-            tui_menu "Root filesystem" "$ROOT_PART (${cur_fs:-unformatted}) needs a Linux filesystem.\nChoose filesystem to format $ROOT_PART:" "format_ext4" \
-                "format_ext4"  "Format as ext4 (recommended)" \
-                "format_btrfs" "Format as btrfs" \
-                "format_xfs"   "Format as xfs"
-        else
-            text_choice "Choose filesystem to format $ROOT_PART:" 1 \
-                "format_ext4" "format_btrfs" "format_xfs"
-        fi
+        choose_root_filesystem 0 ""
     fi
-    case "$REPLY" in
-        keep)         FORMAT_ROOT=0; ROOT_FSTYPE="$cur_fs" ;;
-        format_btrfs) FORMAT_ROOT=1; ROOT_FSTYPE="btrfs" ;;
-        format_xfs)   FORMAT_ROOT=1; ROOT_FSTYPE="xfs" ;;
-        *)            FORMAT_ROOT=1; ROOT_FSTYPE="ext4" ;;
-    esac
 
     # 2) Choose EFI System Partition (/boot/efi)
     local remaining_for_efi=() default_efi="" arch="" allow_no_efi=0
@@ -1501,12 +1580,7 @@ configure_manual_partitions() {
 format_manual_partitions() {
     [ -b "$ROOT_PART" ] || die "Root partition $ROOT_PART not found."
     if [ "$FORMAT_ROOT" -eq 1 ]; then
-        info "Formatting root ($ROOT_PART) as $ROOT_FSTYPE..."
-        case "$ROOT_FSTYPE" in
-            btrfs) mkfs.btrfs -f -L root "$ROOT_PART" >/dev/null ;;
-            xfs)   mkfs.xfs -f -L root "$ROOT_PART" >/dev/null ;;
-            *)     mkfs.ext4 -F -L root "$ROOT_PART" >/dev/null ;;
-        esac
+        format_root_partition "$ROOT_PART" "$ROOT_FSTYPE"
     fi
     if [ -n "$EFI_PART" ]; then
         [ -b "$EFI_PART" ] || die "EFI partition $EFI_PART not found."
@@ -1517,6 +1591,7 @@ format_manual_partitions() {
     fi
     if [ -n "$SWAP_PART" ]; then
         [ -b "$SWAP_PART" ] || die "Swap partition $SWAP_PART not found."
+        swapoff "$SWAP_PART" 2>/dev/null || true
         if [ "$FORMAT_SWAP" -eq 1 ]; then
             info "Formatting swap ($SWAP_PART)..."
             mkswap -L swap "$SWAP_PART" >/dev/null

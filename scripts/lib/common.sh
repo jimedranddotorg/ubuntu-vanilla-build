@@ -2317,6 +2317,8 @@ WIZARD_EOF
             echo "TARGET_DISK_SIZE_GB=${_disk_size}"
             echo "TARGET_USER_MODE=${_user_mode}"
             [[ -n "$_vm_formats" ]] && echo "TARGET_VM_FORMATS=${_vm_formats}"
+        elif [[ "$_profile" == "cli" ]]; then
+            echo "TARGET_INSTALLER=cli"
         else
             echo "TARGET_INSTALLER=calamares"
         fi
@@ -2794,22 +2796,35 @@ function host_main() {
             else
                 screen_stage_args=("${HOST_CMD[$start_index]}" "-" "${HOST_CMD[$((end_index - 1))]}")
             fi
-            # Pass resolved variables explicitly via env inside the detached screen command.
-            export UVB_IN_SCREEN=1 UVB_FORCE_NONINTERACTIVE_RUN=1 NO_CONFIRM=1 LAUNCHED_FROM_START_HERE=0
-            export ADVANCED_MODE="${ADVANCED_MODE:-0}"
-            export UBUNTU_VANILLA_WORKSPACE="${WORKSPACE_DIR%/*}" UVB_OUTPUT_DIR="${OUTPUT_DIR}"
-            export TARGET_NAME TARGET_UBUNTU_MIRROR HOOKS_DIR UVB_UI_MODE
-            uvb_launch_screen_session "$sess_name" "$log_file" \
-                env UVB_IN_SCREEN=1 UVB_FORCE_NONINTERACTIVE_RUN=1 NO_CONFIRM=1 LAUNCHED_FROM_START_HERE=0 \
-                ADVANCED_MODE="${ADVANCED_MODE:-0}" \
-                UBUNTU_VANILLA_WORKSPACE="${WORKSPACE_DIR%/*}" UVB_OUTPUT_DIR="${OUTPUT_DIR}" \
-                TARGET_UBUNTU_VERSION="${TARGET_UBUNTU_VERSION:-}" TARGET_ARCH="${TARGET_ARCH:-amd64}" \
-                TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE:-desktop}" \
-                TARGET_KERNEL_FLAVOR="${TARGET_KERNEL_FLAVOR:-}" TARGET_KERNEL_PACKAGE="${TARGET_KERNEL_PACKAGE:-}" \
-                TARGET_DESKTOP="${TARGET_DESKTOP:-gnome}" TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-network-manager}" \
-                TARGET_NAME="${TARGET_NAME}" TARGET_UBUNTU_MIRROR="${TARGET_UBUNTU_MIRROR}" \
-                HOOKS_DIR="${HOOKS_DIR:-}" UVB_UI_MODE="${UVB_UI_MODE:-cli}" \
-                "${SCRIPT_DIR}/${SCRIPT_NAME}" "${screen_stage_args[@]}"
+            # Persist all resolved variables via a 0600 temp env file so an existing screen
+            # server inherits every option without exposing passwords on process command lines.
+            local screen_log_dir screen_env_file=""
+            screen_log_dir="$(dirname "$log_file")"
+            mkdir -p "$screen_log_dir"
+            screen_env_file="$(mktemp "${screen_log_dir}/.${sess_name}.env.XXXXXX")"
+            chmod 0600 "$screen_env_file"
+            {
+                printf 'export UVB_IN_SCREEN=1 UVB_FORCE_NONINTERACTIVE_RUN=1 NO_CONFIRM=1 LAUNCHED_FROM_START_HERE=0 UVB_UI_MODE=cli\n'
+                printf 'unset DIALOGRC\n'
+                export ADVANCED_MODE="${ADVANCED_MODE:-0}"
+                export UBUNTU_VANILLA_WORKSPACE="${WORKSPACE_DIR%/*}" UVB_OUTPUT_DIR="${OUTPUT_DIR}"
+                local evar
+                for evar in ADVANCED_MODE UBUNTU_VANILLA_WORKSPACE UVB_OUTPUT_DIR HOOKS_DIR GRUB_LIVEBOOT_LABEL; do
+                    if [[ -n "${!evar+x}" ]]; then
+                        printf 'export %s=%q\n' "$evar" "${!evar}"
+                    fi
+                done
+                while IFS= read -r evar; do
+                    printf 'export %s=%q\n' "$evar" "${!evar}"
+                done < <(compgen -v TARGET_)
+            } > "$screen_env_file"
+            local screen_runner
+            screen_runner="set -a; source $(printf '%q' "$screen_env_file"); set +a; rm -f $(printf '%q' "$screen_env_file"); exec $(printf '%q' "${SCRIPT_DIR}/${SCRIPT_NAME}")"
+            local s_arg
+            for s_arg in "${screen_stage_args[@]}"; do
+                screen_runner+=" $(printf '%q' "$s_arg")"
+            done
+            uvb_launch_screen_session "$sess_name" "$log_file" bash -c "$screen_runner"
             ui_ok "Started GNU screen session: ${sess_name}"
             ui_info "Attach with: screen -r ${sess_name}"
             ui_info "Log file:    ${log_file}"

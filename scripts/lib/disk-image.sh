@@ -406,17 +406,19 @@ function install_pkg() {
 }
 
 function detach_image_loop() {
+    sync || true
     if [[ -n "${IMG_MOUNT_DIR:-}" ]]; then
         local _mp
         for _mp in "$IMG_MOUNT_DIR/dev/pts" "$IMG_MOUNT_DIR/dev" "$IMG_MOUNT_DIR/proc" \
                    "$IMG_MOUNT_DIR/sys" "$IMG_MOUNT_DIR/run" "$IMG_MOUNT_DIR/boot/efi" \
                    "$IMG_MOUNT_DIR"; do
             if mountpoint -q "$_mp" 2>/dev/null; then
-                host_priv umount -l "$_mp" 2>/dev/null || true
+                host_priv umount "$_mp" 2>/dev/null || host_priv umount -l "$_mp" 2>/dev/null || true
             fi
         done
     fi
     if [[ -n "${IMG_LOOP_DEV:-}" ]]; then
+        command -v udevadm &>/dev/null && { host_priv udevadm settle 2>/dev/null || true; }
         host_priv losetup -d "$IMG_LOOP_DEV" 2>/dev/null || true
     fi
     IMG_LOOP_DEV=""
@@ -519,7 +521,14 @@ while true; do
     [[ -n "$pw1" && "$pw1" == "$pw2" ]] && break
     echo "Passwords are empty or do not match -- try again."
 done
-read -r -p "Hostname [$(cat /etc/hostname)]: " newhost
+while true; do
+    read -r -p "Hostname [$(cat /etc/hostname)]: " newhost
+    [[ -z "$newhost" ]] && break
+    if [[ "$newhost" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]]; then
+        break
+    fi
+    echo "Invalid hostname (use letters, digits, and hyphens)."
+done
 useradd -m -s /bin/bash -c "${fullname:-$username}" "$username"
 for grp in adm cdrom dip plugdev sudo lxd; do
     getent group "$grp" >/dev/null && usermod -aG "$grp" "$username"
