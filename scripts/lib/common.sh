@@ -808,6 +808,7 @@ EOF
         if [[ "${TARGET_DESKTOP:-gnome}" != "cli" && "${TARGET_DESKTOP:-gnome}" != "cosmic" ]]; then
             install_popos_desktop_branding
         fi
+        ensure_popos_default_settings_branding
         cleanup_popos_ubuntu_remnants
     fi
 

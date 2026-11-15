@@ -7,6 +7,10 @@ POP_APT_URL="https://apt.pop-os.org"
 POP_APT_ORIGIN_URL="https://apt-origin.pop-os.org"
 POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
 POP_PREF_DIVERT_TARGET="/etc/apt/pop-default-settings.pref.diverted"
+POP_KEYRING_FILE="/usr/share/keyrings/pop-os-archive-keyring.gpg"
+POP_RELEASE_URL=""
+POP_PROPRIETARY_URL=""
+POP_RELEASE_UBUNTU_URL=""
 
 function install_firefox_from_popos() {
     echo "=====> Firefox: installing the native build from the Pop!_OS repository"
@@ -97,6 +101,76 @@ function resolve_system76_driver_choice() {
     fi
 }
 
+function _popos_source_uri_from_file() {
+    local file="$1"
+    [[ -r "$file" ]] || return 0
+    awk '/^Enabled:[[:space:]]*yes/ {en=1} /^URIs:[[:space:]]*/ {uri=$2} END {if (en && uri != "") print uri}' "$file"
+}
+
+function restore_popos_apt_sources() {
+    local keyring="$POP_KEYRING_FILE"
+    local release_url="${POP_RELEASE_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-release.sources)}"
+    local proprietary_url="${POP_PROPRIETARY_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-apps.sources)}"
+    local release_ubuntu_url="${POP_RELEASE_UBUNTU_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-release-ubuntu.sources)}"
+
+    # pop-default-settings.postinst calls `apt-manage modify system --default-mirror`
+    # which disables ubuntu.sources and forces http://apt.pop-os.org/ubuntu in
+    # system.sources (breaking arm64/ports.ubuntu.com and custom --mirror values)
+    # and rewrites pop-os-apps.sources to HTTP. Restore the configured mirror + HTTPS.
+    rm -f /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.disabled
+    local sys_keyring=""
+    if [[ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]]; then
+        sys_keyring="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+    elif [[ -f /etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg ]]; then
+        sys_keyring="/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"
+    fi
+    local suites="${TARGET_UBUNTU_VERSION} ${TARGET_UBUNTU_VERSION}-updates ${TARGET_UBUNTU_VERSION}-backports ${TARGET_UBUNTU_VERSION}-security"
+    {
+        echo "X-Repolib-Name: Pop_OS System Sources"
+        echo "Enabled: yes"
+        echo "Types: deb deb-src"
+        echo "URIs: ${TARGET_UBUNTU_MIRROR}"
+        echo "Suites: ${suites}"
+        echo "Components: main restricted universe multiverse"
+        [[ -n "$sys_keyring" ]] && echo "Signed-By: ${sys_keyring}"
+        echo "X-Repolib-Default-Mirror: ${TARGET_UBUNTU_MIRROR}"
+        echo "X-Repolib-ID: system"
+    } > /etc/apt/sources.list.d/system.sources
+    if [[ -n "$proprietary_url" ]]; then
+        cat <<EOF > /etc/apt/sources.list.d/pop-os-apps.sources
+X-Repolib-Name: Pop_OS Applications
+Enabled: yes
+Types: deb
+URIs: ${proprietary_url}
+Suites: ${TARGET_UBUNTU_VERSION}
+Components: main
+Signed-By: ${keyring}
+EOF
+    fi
+    if [[ -n "$release_url" ]]; then
+        cat <<EOF > /etc/apt/sources.list.d/pop-os-release.sources
+X-Repolib-Name: Pop_OS release
+Enabled: yes
+Types: deb
+URIs: ${release_url}
+Suites: ${TARGET_UBUNTU_VERSION}
+Components: main
+Signed-By: ${keyring}
+EOF
+    fi
+    if [[ -n "$release_ubuntu_url" ]]; then
+        cat <<EOF > /etc/apt/sources.list.d/pop-os-release-ubuntu.sources
+X-Repolib-Name: Pop_OS release-ubuntu
+Enabled: yes
+Types: deb
+URIs: ${release_ubuntu_url}
+Suites: ${TARGET_UBUNTU_VERSION}
+Components: main
+Signed-By: ${keyring}
+EOF
+    fi
+}
+
 function setup_pop_apt_repos() {
     echo "=====> configuring Pop!_OS APT repositories from ${POP_APT_URL} (staging excluded) ..."
 
@@ -104,7 +178,7 @@ function setup_pop_apt_repos() {
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
 
-    local keyring="/usr/share/keyrings/pop-os-archive-keyring.gpg"
+    local keyring="$POP_KEYRING_FILE"
     local tmp_gpg_home
     tmp_gpg_home="$(mktemp -d)"
     gpg --homedir "$tmp_gpg_home" --batch --keyserver hkps://keyserver.ubuntu.com \
@@ -113,7 +187,9 @@ function setup_pop_apt_repos() {
     rm -rf "$tmp_gpg_home"
 
     local name base url srcfile added_any=0
-    local release_url="" proprietary_url="" release_ubuntu_url=""
+    POP_RELEASE_URL=""
+    POP_PROPRIETARY_URL=""
+    POP_RELEASE_UBUNTU_URL=""
     rm -f /etc/apt/sources.list.d/pop-os-{release,proprietary,release-ubuntu}.list
     for name in release proprietary release-ubuntu; do
         case "$name" in
@@ -129,9 +205,9 @@ function setup_pop_apt_repos() {
             fi
         done
         case "$name" in
-            release)        release_url="$url" ;;
-            proprietary)    proprietary_url="$url" ;;
-            release-ubuntu) release_ubuntu_url="$url" ;;
+            release)        POP_RELEASE_URL="$url" ;;
+            proprietary)    POP_PROPRIETARY_URL="$url" ;;
+            release-ubuntu) POP_RELEASE_UBUNTU_URL="$url" ;;
         esac
         if [[ -n "$url" ]]; then
             cat <<EOF > "$srcfile"
@@ -180,64 +256,7 @@ EOF
     if apt-cache show pop-default-settings >/dev/null 2>&1; then
         apt-get install -y pop-default-settings
         neutralize_pop_default_settings_blanket_pin
-
-        # pop-default-settings.postinst calls `apt-manage modify system --default-mirror`
-        # which disables ubuntu.sources and forces http://apt.pop-os.org/ubuntu in
-        # system.sources (breaking arm64/ports.ubuntu.com and custom --mirror values)
-        # and rewrites pop-os-apps.sources to HTTP. Restore the configured mirror + HTTPS.
-        rm -f /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.disabled
-        local sys_keyring=""
-        if [[ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]]; then
-            sys_keyring="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
-        elif [[ -f /etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg ]]; then
-            sys_keyring="/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"
-        fi
-        local suites="${TARGET_UBUNTU_VERSION} ${TARGET_UBUNTU_VERSION}-updates ${TARGET_UBUNTU_VERSION}-backports ${TARGET_UBUNTU_VERSION}-security"
-        {
-            echo "X-Repolib-Name: Pop_OS System Sources"
-            echo "Enabled: yes"
-            echo "Types: deb deb-src"
-            echo "URIs: ${TARGET_UBUNTU_MIRROR}"
-            echo "Suites: ${suites}"
-            echo "Components: main restricted universe multiverse"
-            [[ -n "$sys_keyring" ]] && echo "Signed-By: ${sys_keyring}"
-            echo "X-Repolib-Default-Mirror: ${TARGET_UBUNTU_MIRROR}"
-            echo "X-Repolib-ID: system"
-        } > /etc/apt/sources.list.d/system.sources
-        if [[ -n "$proprietary_url" ]]; then
-            cat <<EOF > /etc/apt/sources.list.d/pop-os-apps.sources
-X-Repolib-Name: Pop_OS Applications
-Enabled: yes
-Types: deb
-URIs: ${proprietary_url}
-Suites: ${TARGET_UBUNTU_VERSION}
-Components: main
-Signed-By: ${keyring}
-EOF
-        fi
-        # Ensure release/release-ubuntu remain intact as configured above.
-        if [[ -n "$release_url" ]]; then
-            cat <<EOF > /etc/apt/sources.list.d/pop-os-release.sources
-X-Repolib-Name: Pop_OS release
-Enabled: yes
-Types: deb
-URIs: ${release_url}
-Suites: ${TARGET_UBUNTU_VERSION}
-Components: main
-Signed-By: ${keyring}
-EOF
-        fi
-        if [[ -n "$release_ubuntu_url" ]]; then
-            cat <<EOF > /etc/apt/sources.list.d/pop-os-release-ubuntu.sources
-X-Repolib-Name: Pop_OS release-ubuntu
-Enabled: yes
-Types: deb
-URIs: ${release_ubuntu_url}
-Suites: ${TARGET_UBUNTU_VERSION}
-Components: main
-Signed-By: ${keyring}
-EOF
-        fi
+        restore_popos_apt_sources
 
         apt-get update
         apt_install_available "Pop!_OS default settings extras" \
@@ -256,11 +275,94 @@ EOF
     fi
 }
 
+function ensure_popos_default_settings_branding() {
+    echo "=====> Verifying Pop!_OS branding via pop-default-settings (profile=${TARGET_IMAGE_PROFILE:-desktop}, desktop=${TARGET_DESKTOP:-gnome})"
+
+    if ! dpkg -s pop-default-settings >/dev/null 2>&1; then
+        if apt-cache show pop-default-settings >/dev/null 2>&1; then
+            apt-get install -y pop-default-settings
+            neutralize_pop_default_settings_blanket_pin
+            restore_popos_apt_sources
+            apt-get update
+            apt_install_available "Pop!_OS default settings extras" \
+                pop-default-settings-zram \
+                pop-default-settings-ntsync
+        else
+            >&2 echo "ERROR: pop-default-settings is not available for Pop!_OS branding."
+            exit 1
+        fi
+    fi
+
+    neutralize_pop_default_settings_blanket_pin
+
+    # Ensure dpkg-divert symlinks owned by pop-default-settings remain intact
+    # across all desktop stacks and CLI/TTY builds.
+    local pair src dst need_reconfigure=0
+    for pair in \
+        "/etc/os-release=/etc/pop-os/os-release" \
+        "/usr/lib/os-release=/etc/pop-os/os-release" \
+        "/etc/lsb-release=/etc/pop-os/lsb-release" \
+        "/etc/issue=/etc/pop-os/issue" \
+        "/etc/issue.net=/etc/pop-os/issue.net" \
+        "/etc/legal=/etc/pop-os/legal" \
+        "/etc/update-motd.d/10-help-text=/etc/pop-os/update-motd.d/10-help-text" \
+        "/etc/update-motd.d/50-motd-news=/etc/pop-os/update-motd.d/50-motd-news"; do
+        src="${pair%%=*}"
+        dst="${pair#*=}"
+        [[ -e "$dst" ]] || continue
+        if [[ "$(readlink -f "$src" 2>/dev/null || true)" != "$(readlink -f "$dst")" ]]; then
+            need_reconfigure=1
+            if [[ "$(dpkg-divert --listpackage "$src" 2>/dev/null || true)" != "pop-default-settings" ]]; then
+                dpkg-divert --add --package pop-default-settings --rename --divert "${src}.diverted" "$src" >/dev/null 2>&1 || true
+            fi
+            install -d "$(dirname "$src")"
+            ln --force --relative --symbolic "$dst" "$src"
+        fi
+    done
+    if [[ "$need_reconfigure" -eq 1 ]]; then
+        restore_popos_apt_sources
+    fi
+
+    if ! grep -qs '^ID=pop$' /etc/os-release; then
+        >&2 echo "ERROR: /etc/os-release does not report ID=pop after pop-default-settings branding."
+        exit 1
+    fi
+
+    # Expose distributor-logo-pop-os under hicolor so non-Pop icon themes (e.g.
+    # KDE Breeze, LXQt, XFCE) still resolve LOGO=distributor-logo-pop-os.
+    local logo_src=""
+    if [[ -f /usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg ]]; then
+        logo_src="/usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg"
+    elif [[ -f /usr/share/icons/pop-os-branding/pop_icon.svg ]]; then
+        logo_src="/usr/share/icons/pop-os-branding/pop_icon.svg"
+    fi
+    if [[ -n "$logo_src" && ! -e /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg ]]; then
+        install -d /usr/share/icons/hicolor/scalable/places
+        cp -a "$logo_src" /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # shellcheck source=/dev/null
+    echo "=====> Pop!_OS branding verified: $(. /etc/os-release && echo "${PRETTY_NAME:-Pop!_OS}")"
+}
+
 function ensure_popos_plymouth_alternatives() {
     if dpkg -s plymouth-theme-ubuntu-text >/dev/null 2>&1; then
-        apt-get purge -y plymouth-theme-ubuntu-text || true
+        # Some desktops (such as budgie-desktop-environment via
+        # plymouth-theme-ubuntu-budgie-text) depend on plymouth-theme-ubuntu-text;
+        # only purge it when nothing else depends on it.
+        if ! apt-get -s purge -y plymouth-theme-ubuntu-text 2>/dev/null \
+            | awk '/^Remv / {print $2}' | grep -vx 'plymouth-theme-ubuntu-text' | grep -q .; then
+            apt-get purge -y plymouth-theme-ubuntu-text || true
+        fi
     fi
     if [[ -f /usr/share/plymouth/themes/pop-basic/pop-basic.plymouth ]]; then
+        if ! update-alternatives --query default.plymouth 2>/dev/null | grep -Fq '/usr/share/plymouth/themes/pop-basic/pop-basic.plymouth'; then
+            update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
+                /usr/share/plymouth/themes/pop-basic/pop-basic.plymouth 200 >/dev/null 2>&1 || true
+        fi
         update-alternatives --set default.plymouth /usr/share/plymouth/themes/pop-basic/pop-basic.plymouth 2>/dev/null || true
     fi
     if [[ -f /usr/share/plymouth/themes/text/text.plymouth ]]; then
@@ -274,20 +376,121 @@ function install_popos_plymouth() {
     ensure_popos_plymouth_alternatives
 }
 
+function install_popos_grub_theme_from_amd64_pkg() {
+    # Upstream pop-grub-theme ships architecture-independent theme assets tagged
+    # Architecture: amd64 in apt.pop-os.org/release (absent from binary-arm64).
+    # Fetch and cryptographically verify grub-theme-pop from release/binary-amd64
+    # and extract only /usr/share/grub/themes/pop so arm64 gets pop-grub too.
+    local rel_url=""
+    rel_url="${POP_RELEASE_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-release.sources)}"
+    [[ -n "$rel_url" ]] || rel_url="${POP_APT_URL}/release"
+
+    local keyring="$POP_KEYRING_FILE"
+    if [[ ! -f "$keyring" && -f /etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg ]]; then
+        keyring="/etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg"
+    fi
+    if [[ ! -f "$keyring" ]]; then
+        echo "  WARN  Pop!_OS archive keyring missing; cannot fetch grub-theme-pop." >&2
+        return 1
+    fi
+
+    local tmp_dir=""
+    tmp_dir="$(mktemp -d)"
+    local base_dist="${rel_url%/}/dists/${TARGET_UBUNTU_VERSION}"
+    if ! curl -fsSL "${base_dist}/Release" -o "${tmp_dir}/Release" || \
+       ! curl -fsSL "${base_dist}/Release.gpg" -o "${tmp_dir}/Release.gpg"; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if ! gpgv --keyring "$keyring" "${tmp_dir}/Release.gpg" "${tmp_dir}/Release" >/dev/null 2>&1; then
+        echo "  WARN  Release.gpg verification failed for ${base_dist}." >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    local pkg_sha256=""
+    pkg_sha256="$(awk '
+        /^SHA256:/ {in_s=1; next}
+        /^[^ ]/ {in_s=0}
+        in_s && $3 == "main/binary-amd64/Packages.gz" {print $1; exit}
+    ' "${tmp_dir}/Release")"
+    if [[ -z "$pkg_sha256" ]] || \
+       ! curl -fsSL "${base_dist}/main/binary-amd64/Packages.gz" -o "${tmp_dir}/Packages.gz" || \
+       ! printf '%s  %s\n' "$pkg_sha256" "${tmp_dir}/Packages.gz" | sha256sum -c - >/dev/null 2>&1; then
+        echo "  WARN  Packages.gz verification failed for ${base_dist}." >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    local deb_info="" deb_rel="" deb_sha256=""
+    deb_info="$(gzip -dc "${tmp_dir}/Packages.gz" | awk '
+        /^Package: / {pkg=$2; fn=""; sha=""}
+        /^Filename: / {fn=$2}
+        /^SHA256: / {sha=$2}
+        /^$/ {if (pkg == "grub-theme-pop" && fn != "" && sha != "") {print fn "\t" sha; found=1; exit}}
+        END {if (!found && pkg == "grub-theme-pop" && fn != "" && sha != "") print fn "\t" sha}
+    ')"
+    deb_rel="${deb_info%%$'\t'*}"
+    deb_sha256="${deb_info#*$'\t'}"
+    if [[ -z "$deb_rel" || -z "$deb_sha256" ]]; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    if ! curl -fsSL "${rel_url%/}/${deb_rel}" -o "${tmp_dir}/grub-theme-pop.deb" || \
+       ! printf '%s  %s\n' "$deb_sha256" "${tmp_dir}/grub-theme-pop.deb" | sha256sum -c - >/dev/null 2>&1; then
+        echo "  WARN  grub-theme-pop .deb checksum verification failed." >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    mkdir -p "${tmp_dir}/extract"
+    dpkg-deb -x "${tmp_dir}/grub-theme-pop.deb" "${tmp_dir}/extract"
+    if [[ ! -f "${tmp_dir}/extract/usr/share/grub/themes/pop/theme.txt" ]]; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    install -d /usr/share/grub/themes
+    rm -rf /usr/share/grub/themes/pop
+    cp -a "${tmp_dir}/extract/usr/share/grub/themes/pop" /usr/share/grub/themes/pop
+    rm -rf "$tmp_dir"
+    echo "=====> Pop!_OS GRUB theme: extracted verified assets from grub-theme-pop (${TARGET_ARCH:-arm64})"
+    return 0
+}
+
 function install_popos_grub_branding() {
-    echo "=====> GRUB: configuring Pop!_OS bootloader branding"
+    echo "=====> GRUB: configuring Pop!_OS bootloader branding (pop-grub)"
     apt_install_available "Pop!_OS GRUB theme" grub-theme-pop
+    if [[ ! -f /usr/share/grub/themes/pop/theme.txt ]]; then
+        install_popos_grub_theme_from_amd64_pkg || \
+            echo "  WARN  grub-theme-pop theme assets unavailable; proceeding with GRUB_DISTRIBUTOR only." >&2
+    fi
 
     install -d /etc/default/grub.d
+    # Keep timeout defaults before 50-cloudimg.cfg (0s) and 50-removable.cfg (3s)
+    # so installed ISOs/VMs show the Pop!_OS GRUB theme instead of hidden/0s timeout.
+    cat <<'EOF' > /etc/default/grub.d/40-pop-menu.cfg
+# Pop!_OS GRUB menu defaults (managed by build-popos)
+GRUB_TIMEOUT_STYLE=menu
+GRUB_TIMEOUT=10
+EOF
+
     if [[ -f /usr/share/grub/themes/pop/theme.txt ]]; then
         if [[ -f /usr/share/grub/themes/pop/icons/pop-os.png ]]; then
             [[ ! -e /usr/share/grub/themes/pop/icons/pop_os.png ]] && ln -sf pop-os.png /usr/share/grub/themes/pop/icons/pop_os.png
             [[ ! -e /usr/share/grub/themes/pop/icons/pop__os.png ]] && ln -sf pop-os.png /usr/share/grub/themes/pop/icons/pop__os.png
         fi
+        # Mirror theme under /boot/grub/themes/pop so separate unencrypted /boot
+        # (Calamares LUKS2) and direct installs both render the theme reliably.
+        install -d /boot/grub/themes
+        rm -rf /boot/grub/themes/pop
+        cp -a /usr/share/grub/themes/pop /boot/grub/themes/pop
+
         cat <<'EOF' > /etc/default/grub.d/50-pop-branding.cfg
 # Pop!_OS GRUB branding (managed by build-popos)
 GRUB_DISTRIBUTOR="Pop!_OS"
-GRUB_THEME="/usr/share/grub/themes/pop/theme.txt"
+GRUB_THEME="/boot/grub/themes/pop/theme.txt"
 EOF
     else
         cat <<'EOF' > /etc/default/grub.d/50-pop-branding.cfg
@@ -313,11 +516,12 @@ gtk-cursor-theme-name = Pop
 gtk-icon-sizes = panel-menu-bar=24,24
 EOF
 
+    local wall=""
+    wall="$(find /usr/share/backgrounds -maxdepth 3 -type f \
+        \( -iname '*pop*' -o -iname '*kate-hazen*' -o -iname '*system76*' \) \
+        2>/dev/null | sort | head -n 1 || true)"
+
     if [[ -d /usr/share/glib-2.0/schemas ]] && command -v glib-compile-schemas >/dev/null 2>&1; then
-        local wall=""
-        wall="$(find /usr/share/backgrounds -maxdepth 3 -type f \
-            \( -iname '*pop*' -o -iname '*kate-hazen*' -o -iname '*system76*' \) \
-            2>/dev/null | sort | head -n 1 || true)"
         cat <<'EOF' > /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
 [org.gnome.desktop.interface]
 gtk-theme = 'Pop-dark'
@@ -340,7 +544,97 @@ picture-uri-dark = 'file://${wall}'
 picture-uri = 'file://${wall}'
 EOF
         fi
+
+        if [[ -f /usr/share/glib-2.0/schemas/org.gnome.login-screen.gschema.xml ]]; then
+            cat <<'EOF' >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+
+[org.gnome.desktop.interface:GNOME-Greeter]
+gtk-theme = 'Pop-dark'
+icon-theme = 'Pop'
+cursor-theme = 'Pop'
+EOF
+            if [[ -f /usr/share/icons/pop-os-branding/256x256/apps/ubuntu-logo-icon.png ]]; then
+                cat <<'EOF' >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+
+[org.gnome.login-screen]
+logo = '/usr/share/icons/pop-os-branding/256x256/apps/ubuntu-logo-icon.png'
+EOF
+            fi
+        fi
+
+        if [[ -f /usr/share/glib-2.0/schemas/org.cinnamon.desktop.interface.gschema.xml ]]; then
+            cat <<'EOF' >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+
+[org.cinnamon.desktop.interface]
+gtk-theme = 'Pop-dark'
+icon-theme = 'Pop'
+cursor-theme = 'Pop'
+EOF
+            if [[ -n "$wall" ]]; then
+                cat <<EOF >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+
+[org.cinnamon.desktop.background]
+picture-uri = 'file://${wall}'
+EOF
+            fi
+        fi
+
+        if [[ -f /usr/share/glib-2.0/schemas/org.mate.interface.gschema.xml ]]; then
+            cat <<'EOF' >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+
+[org.mate.interface]
+gtk-theme = 'Pop-dark'
+icon-theme = 'Pop'
+EOF
+            if [[ -n "$wall" ]]; then
+                cat <<EOF >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+
+[org.mate.background]
+picture-filename = '${wall}'
+EOF
+            fi
+        fi
+
+        if [[ -f /usr/share/glib-2.0/schemas/x.dm.slick-greeter.gschema.xml ]]; then
+            cat <<'EOF' >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+
+[x.dm.slick-greeter]
+theme-name = 'Pop-dark'
+icon-theme-name = 'Pop'
+cursor-theme-name = 'Pop'
+EOF
+            if [[ -n "$wall" ]]; then
+                echo "background = '${wall}'" >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+            fi
+            if [[ -f /usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg ]]; then
+                echo "logo = '/usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg'" \
+                    >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
+            fi
+        fi
+
         glib-compile-schemas /usr/share/glib-2.0/schemas || true
+    fi
+
+    if dpkg -s slick-greeter >/dev/null 2>&1; then
+        install -d /etc/lightdm
+        {
+            echo "[Greeter]"
+            echo "theme-name=Pop-dark"
+            echo "icon-theme-name=Pop"
+            echo "cursor-theme-name=Pop"
+            [[ -n "$wall" ]] && echo "background=${wall}"
+            [[ -f /usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg ]] && \
+                echo "logo=/usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg"
+        } > /etc/lightdm/slick-greeter.conf
+    fi
+
+    local xfce_xs="/etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xsettings.xml"
+    if [[ -f "$xfce_xs" ]]; then
+        sed -i -e 's/\(name="ThemeName" type="string" value=\)"[^"]*"/\1"Pop-dark"/' \
+               -e 's/\(name="IconThemeName" type="string" value=\)"[^"]*"/\1"Pop"/' \
+               -e 's/\(name="SoundThemeName" type="string" value=\)"[^"]*"/\1"Pop"/' \
+               -e 's/\(name="CursorThemeName" type="string" value=\)"[^"]*"/\1"Pop"/' \
+               "$xfce_xs"
     fi
 }
 
@@ -458,7 +752,7 @@ EOF
 [Desktop Entry]
 Type=Application
 Name=Install Pop!_OS
-Comment=Install Pop!_OS to disk using the CLI/TUI installer
+Comment=Install Pop!_OS to disk using the Unofficial CLI Installer
 Exec=cosmic-term -e sudo /usr/local/bin/install-system
 Icon=system-software-install
 Terminal=false

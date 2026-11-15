@@ -101,16 +101,16 @@ cd scripts/
 ## Pop!_OS Notes
 
 - Repositories come from `https://apt.pop-os.org/` (`release`, `proprietary`, `release-ubuntu`; `apt-origin.pop-os.org` fallback per suite; staging excluded).
-- `pop-default-settings` (plus `pop-default-settings-zram`, `pop-default-settings-ntsync`), `pop-plymouth-theme` (`plymouth-theme-pop-basic`), `grub-theme-pop` (`amd64`), `GRUB_DISTRIBUTOR="Pop!_OS"`, and `pop-theme` + `pop-wallpapers` (desktop profiles) provide Pop!_OS OS identity, boot splash, GRUB menu, and GTK/icon/sound theming without Ubuntu branding (`plymouth-theme-ubuntu-text` is omitted/purged).
+- `pop-default-settings` (plus `pop-default-settings-zram`, `pop-default-settings-ntsync`), `pop-plymouth-theme` (`plymouth-theme-pop-basic`), `grub-theme-pop` (`pop-grub` on both live ISOs and installed systems for `amd64` and `arm64`), `GRUB_DISTRIBUTOR="Pop!_OS"`, and `pop-theme` + `pop-wallpapers` (desktop profiles) provide Pop!_OS OS identity, boot splash, GRUB menu, and GTK/icon/sound theming across every desktop choice and CLI builds without Ubuntu branding.
 - `pop-default-settings`'s blanket `Package: *` pin (`1001`) is diverted outside `/etc/apt/preferences.d/` and replaced by a scoped pin (`o=pop-os-release`, priority `1001`) for Pop!_OS, COSMIC, and System76 packages so standard Ubuntu desktop metapackages like `vanilla-gnome-desktop` stay installable without `update-manager-core` dependency conflicts.
 - `linux-system76` (`--kernel=system76`, default on `amd64`) is `amd64`-only; `arm64` Pop!_OS builds use Ubuntu HWE `generic` or `lowlatency`.
 - **COSMIC desktop (`--desktop=cosmic`)**: installs the full Pop!_OS COSMIC desktop stack without `pop-server`/`dracut`, `pop-installer`, or Calamares. Live ISOs use `/usr/local/bin/install-system` with GRUB (512 MB ESP) instead of `systemd-boot` or Calamares. On non-COSMIC `noble`/`resolute` builds, you can also install COSMIC afterward with `sudo apt update && sudo apt install cosmic-session greetd`.
 
 ---
 
-## CLI Installer (`/usr/local/bin/install-system`)
+## Unofficial CLI Installer (`/usr/local/bin/install-system`)
 
-Every ISO ships `scripts/cli-installer/install-system` at `/usr/local/bin/install-system`. It runs interactively on a TTY (either `whiptail`/`dialog` boxes or plain text prompts) and follows the Calamares module sequence in `scripts/calamares/settings.conf`:
+Every ISO ships `scripts/cli-installer/install-system` (titled **Unofficial CLI Installer**) at `/usr/local/bin/install-system`. It runs interactively on a TTY (either `whiptail`/`dialog` boxes or plain text prompts) and follows the Calamares module sequence in `scripts/calamares/settings.conf`:
 
 1. Welcome & UI selection
 2. Locale (`scripts/calamares/i18n/SUPPORTED` UTF-8 list) & keyboard layout

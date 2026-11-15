@@ -1,6 +1,6 @@
-# Ubuntu / Pop!_OS CLI Installer
+# Unofficial CLI Installer
 
-A self-contained Bash installer (`scripts/cli-installer/install-system`) that mirrors the Calamares module sequence (`scripts/calamares/settings.conf`) from a terminal.
+A self-contained Bash installer (`scripts/cli-installer/install-system`) that mirrors the Calamares module sequence (`scripts/calamares/settings.conf`) from a terminal for Ubuntu and Pop!_OS ISOs.
 
 Every ISO built by `scripts/build.sh` and `scripts/build-popos.sh` installs this script at `/usr/local/bin/install-system`.
 

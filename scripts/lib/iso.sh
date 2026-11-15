@@ -273,7 +273,112 @@ function build_image() {
     local iso_marker="ubuntu"
     [[ "$UVB_DISTRO" == "popos" ]] && iso_marker="popos"
     touch "$iso_marker"
-    if [[ "$arch" == "arm64" ]]; then
+
+    local pop_grub_theme_copied=0
+    if [[ "$UVB_DISTRO" == "popos" ]]; then
+        if [[ -f /boot/grub/themes/pop/theme.txt ]]; then
+            install -d boot/grub/themes
+            cp -a /boot/grub/themes/pop boot/grub/themes/pop
+            pop_grub_theme_copied=1
+        elif [[ -f /usr/share/grub/themes/pop/theme.txt ]]; then
+            install -d boot/grub/themes
+            cp -a /usr/share/grub/themes/pop boot/grub/themes/pop
+            pop_grub_theme_copied=1
+        fi
+    fi
+
+    if [[ "$UVB_DISTRO" == "popos" && "$pop_grub_theme_copied" -eq 1 ]]; then
+        local live_entry_header="menuentry \"$GRUB_LIVEBOOT_LABEL\" --class pop-os --class gnu-linux --class os {"
+        if [[ "$arch" == "arm64" ]]; then
+            cat <<EOF > boot/grub/grub.cfg
+search --set=root --file /${iso_marker}
+
+insmod all_video
+insmod font
+insmod linux
+if loadfont /boot/grub/themes/pop/font.pf2 ; then
+    set gfxmode=auto
+    set gfxpayload=keep
+    insmod gfxterm
+    terminal_output gfxterm
+fi
+insmod gfxmenu
+insmod png
+if [ -f /boot/grub/themes/pop/theme.txt ]; then
+    set theme=/boot/grub/themes/pop/theme.txt
+    export theme
+fi
+
+set default="0"
+set timeout=30
+
+${live_entry_header}
+    linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
+    initrd /casper/initrd
+}
+
+menuentry "Check the disc for defects" {
+    linux /casper/vmlinuz boot=casper integrity-check quiet splash ---
+    initrd /casper/initrd
+}
+
+menuentry "UEFI firmware settings" {
+    fwsetup
+}
+
+menuentry "Test memory with Memtest86+ (UEFI ARM64)" {
+    linux /install/memtest86+.efi
+}
+EOF
+        else
+            cat <<EOF > boot/grub/grub.cfg
+search --set=root --file /${iso_marker}
+
+insmod all_video
+insmod font
+insmod linux
+if loadfont /boot/grub/themes/pop/font.pf2 ; then
+    set gfxmode=auto
+    set gfxpayload=keep
+    insmod gfxterm
+    terminal_output gfxterm
+fi
+insmod gfxmenu
+insmod png
+if [ -f /boot/grub/themes/pop/theme.txt ]; then
+    set theme=/boot/grub/themes/pop/theme.txt
+    export theme
+fi
+
+set default="0"
+set timeout=30
+
+${live_entry_header}
+    linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
+    initrd /casper/initrd
+}
+
+menuentry "Check the disc for defects" {
+    linux /casper/vmlinuz boot=casper integrity-check quiet splash ---
+    initrd /casper/initrd
+}
+
+if [ "\$grub_platform" = "efi" ]; then
+menuentry "UEFI firmware settings" {
+    fwsetup
+}
+
+menuentry "Test memory with Memtest86+ (UEFI)" {
+    linux /install/memtest86+.bin
+}
+else
+menuentry "Test memory with Memtest86+ (BIOS)" {
+    linux /install/memtest86+.bin
+}
+fi
+EOF
+        fi
+    elif [[ "$arch" == "arm64" ]]; then
         cat <<EOF > boot/grub/grub.cfg
 search --set=root --file /${iso_marker}
 
@@ -406,10 +511,14 @@ EOF
     )
 
     if [[ "$arch" == "amd64" ]]; then
+        local bios_install_modules="linux16 linux normal iso9660 biosdisk memdisk search tar ls"
+        if [[ "$UVB_DISTRO" == "popos" && "$pop_grub_theme_copied" -eq 1 ]]; then
+            bios_install_modules="linux16 linux normal iso9660 biosdisk memdisk search tar ls all_video vbe vga video_bochs video_cirrus video video_fb video_colors font gfxterm gfxterm_background gfxmenu bitmap bitmap_scale png trig test echo terminal bufio"
+        fi
         grub-mkstandalone \
             --format=i386-pc \
             --output=boot/grub/core.img \
-            --install-modules="linux16 linux normal iso9660 biosdisk memdisk search tar ls" \
+            --install-modules="$bios_install_modules" \
             --modules="linux16 linux normal iso9660 biosdisk search" \
             --locales="" \
             --fonts="" \
