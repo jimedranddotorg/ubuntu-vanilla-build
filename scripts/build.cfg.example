@@ -39,6 +39,9 @@
 # TARGET_OPENSSH_SERVER=0              # 0 | 1 (defaults to 1 on cloud images)
 # TARGET_COCKPIT=0                     # 0 | 1
 
+# --- Security (Ubuntu only) ---
+# TARGET_SECURITY=apparmor             # apparmor | selinux (Ubuntu builders only)
+
 # --- Disk Image Options (build-img / build-vm / build-removable & Pop!_OS equivalents) ---
 # TARGET_FIRMWARE=uefi                 # uefi | hybrid (arm64 is uefi-only; removable defaults to hybrid on amd64)
 # TARGET_DISK_SIZE_GB=32               # default 32 (min 10) for cloud/vm; default 16 (min 8) for removable

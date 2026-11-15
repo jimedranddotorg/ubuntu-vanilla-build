@@ -259,6 +259,7 @@ function set_defaults() {
     fi
     export TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE:-}"
     export TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-}"
+    export TARGET_SECURITY="${TARGET_SECURITY:-}"
     if [[ "$UVB_OUTPUT_KIND" != "iso" ]]; then
         export TARGET_FIRMWARE="${TARGET_FIRMWARE:-}"
         export TARGET_DISK_SIZE_GB="${TARGET_DISK_SIZE_GB:-}"
@@ -666,6 +667,64 @@ function install_pacstall_ppr() {
     apt-get install -y pacstall
 }
 
+function configure_ubuntu_security_mac() {
+    [[ "$UVB_DISTRO" == "ubuntu" ]] || return 0
+    case "${TARGET_SECURITY:-apparmor}" in
+        apparmor)
+            echo "=====> Security (MAC): AppArmor (Ubuntu default)"
+            apt-get install -y apparmor
+            ;;
+        selinux)
+            echo "=====> Security (MAC): SELinux (selinux-basics + selinux-policy-default; disabling AppArmor)"
+            if dpkg -s apparmor >/dev/null 2>&1; then
+                if ! apt-get -s purge -y apparmor apparmor-profiles apparmor-utils 2>/dev/null \
+                    | awk '/^Remv / {print $2}' | grep -vxE 'apparmor(-profiles|-utils|-profiles-extra)?' | grep -q .; then
+                    apt-get purge -y apparmor apparmor-profiles apparmor-utils || true
+                else
+                    systemctl disable apparmor.service >/dev/null 2>&1 || true
+                fi
+            fi
+
+            apt-get install -y \
+                selinux-basics \
+                selinux-policy-default \
+                selinux-utils \
+                policycoreutils \
+                checkpolicy \
+                setools \
+                auditd
+            apt_install_available "SELinux Python utilities" policycoreutils-python-utils
+
+            install -d /etc/selinux /etc/default/grub.d
+            if [[ ! -f /etc/selinux/config ]]; then
+                cat <<'EOF' > /etc/selinux/config
+SELINUX=permissive
+SELINUXTYPE=default
+SETLOCALDEFS=0
+EOF
+            else
+                sed -i -e 's/^SELINUX=.*/SELINUX=permissive/' -e 's/^SELINUXTYPE=.*/SELINUXTYPE=default/' /etc/selinux/config
+            fi
+
+            cat <<'EOF' > /etc/default/grub.d/60-selinux.cfg
+# SELinux kernel parameters (managed by ubuntu-vanilla-build)
+case " ${GRUB_CMDLINE_LINUX:-} " in
+    *" apparmor=0 "*) ;;
+    *) GRUB_CMDLINE_LINUX="${GRUB_CMDLINE_LINUX:+${GRUB_CMDLINE_LINUX} }apparmor=0" ;;
+esac
+case " ${GRUB_CMDLINE_LINUX:-} " in
+    *" security=selinux "*) ;;
+    *) GRUB_CMDLINE_LINUX="${GRUB_CMDLINE_LINUX:+${GRUB_CMDLINE_LINUX} }security=selinux" ;;
+esac
+EOF
+            if [[ "$UVB_OUTPUT_KIND" == "iso" ]]; then
+                # Live squashfs/casper boot must not trigger first-boot autorelabel reboot.
+                rm -f /.autorelabel
+            fi
+            ;;
+    esac
+}
+
 function customize_image() {
     block_snapd
     block_fwupd
@@ -810,6 +869,8 @@ EOF
         fi
         install_popos_branding_migration_helper
         cleanup_popos_ubuntu_remnants
+    else
+        configure_ubuntu_security_mac
     fi
 
     apt-get install -y curl wget ca-certificates gnupg
@@ -1375,6 +1436,7 @@ function run_chroot() {
         TARGET_PACKAGE_REMOVE="${TARGET_PACKAGE_REMOVE:-}" \
         TARGET_IMAGE_PROFILE="${TARGET_IMAGE_PROFILE:-desktop}" \
         TARGET_NETWORK_STACK="${TARGET_NETWORK_STACK:-network-manager}" \
+        TARGET_SECURITY="${TARGET_SECURITY:-apparmor}" \
         TARGET_FIRMWARE="${TARGET_FIRMWARE:-uefi}" \
         DEVEL_CODENAME="${DEVEL_CODENAME:-}" \
         DEVEL_VERSION="${DEVEL_VERSION:-}" \
@@ -1446,6 +1508,7 @@ function finish_up() {
     unblock_fwupd
     rm -f /etc/ssh/ssh_host_*
     truncate -s 0 /etc/machine-id
+    [[ "$UVB_OUTPUT_KIND" == "iso" ]] && rm -f /.autorelabel
 
     rm -f /sbin/initctl
     dpkg-divert --rename --remove /sbin/initctl 2>/dev/null || true
@@ -1956,6 +2019,26 @@ function resolve_optional_service_choices() {
     export TARGET_COCKPIT="${TARGET_COCKPIT:-0}"
 }
 
+function resolve_security_choice() {
+    if [[ "$UVB_DISTRO" != "ubuntu" ]]; then
+        export TARGET_SECURITY="${TARGET_SECURITY:-apparmor}"
+        return 0
+    fi
+    if [[ -n "${TARGET_SECURITY:-}" ]]; then
+        export TARGET_SECURITY="${TARGET_SECURITY,,}"
+        return 0
+    fi
+    if prompts_enabled; then
+        ui_menu "Security (MAC framework)" "Choose Mandatory Access Control (Ubuntu only):" "apparmor" \
+            "apparmor" "AppArmor (Ubuntu default)" \
+            "selinux"  "SELinux (selinux-basics + selinux-policy-default; disables AppArmor)"
+        export TARGET_SECURITY="$UI_REPLY"
+        ui_ok "TARGET_SECURITY=$TARGET_SECURITY"
+    else
+        export TARGET_SECURITY="apparmor"
+    fi
+}
+
 function check_common_settings() {
     assert_supported_release || exit 1
     normalize_arch_variant
@@ -2010,6 +2093,19 @@ function check_common_settings() {
             exit 1
             ;;
     esac
+    export TARGET_SECURITY="${TARGET_SECURITY:-apparmor}"
+    export TARGET_SECURITY="${TARGET_SECURITY,,}"
+    case "${TARGET_SECURITY}" in
+        apparmor|selinux) ;;
+        *)
+            ui_err "TARGET_SECURITY must be apparmor or selinux (got: '${TARGET_SECURITY}')."
+            exit 1
+            ;;
+    esac
+    if [[ "$UVB_DISTRO" != "ubuntu" && "${TARGET_SECURITY}" != "apparmor" ]]; then
+        ui_err "TARGET_SECURITY=${TARGET_SECURITY} is only supported on Ubuntu builds (Pop!_OS builds remain untouched)."
+        exit 1
+    fi
     if [[ "${TARGET_DESKTOP:-}" == "mate" ]]; then
         case "${TARGET_MATE_PACKAGE:-mate-desktop-environment}" in
             full) export TARGET_MATE_PACKAGE="mate-desktop-environment" ;;
@@ -2066,7 +2162,7 @@ function load_config_file() {
                 TARGET_LOCALE|TARGET_KEYBOARD_LAYOUT|TARGET_KEYBOARD_VARIANT|\
                 TARGET_INSTALLER|TARGET_PACKAGE_REMOVE|\
                 TARGET_FIRMWARE|TARGET_DISK_SIZE_GB|TARGET_IMAGE_PROFILE|\
-                TARGET_NETWORK_STACK|TARGET_IMG_ALLOC|TARGET_USER_MODE|\
+                TARGET_NETWORK_STACK|TARGET_SECURITY|TARGET_IMG_ALLOC|TARGET_USER_MODE|\
                 TARGET_USERNAME|TARGET_USER_PASSWORD|TARGET_USER_FULLNAME|\
                 TARGET_HOSTNAME|TARGET_VM_FORMATS|GRUB_LIVEBOOT_LABEL|\
                 UBUNTU_VANILLA_WORKSPACE|UVB_OUTPUT_DIR|UVB_UI_MODE|\
@@ -2105,7 +2201,7 @@ function generate_config_wizard() {
     local _release _arch _profile _kernel _desktop _kde_pkg _mate_pkg _mate_extras _gnome_rec
     local _network _firmware _alloc _disk_size _user_mode _vm_formats _mirror
     local _brave _librewolf _firefox _firefox_esr _firefox_popos _thunderbird
-    local _pacstall _ubuntu_studio _system76_driver _fwupd _openssh _cockpit
+    local _pacstall _ubuntu_studio _system76_driver _security _fwupd _openssh _cockpit
     local _locale _keyboard_layout _keyboard_variant _ui_mode _advanced _name _workspace _output _hooks
 
     if [[ "$UVB_DISTRO" == "popos" ]]; then
@@ -2253,9 +2349,17 @@ function generate_config_wizard() {
     _pacstall="$UI_REPLY"
 
     _system76_driver="0"
+    _security="apparmor"
     if [[ "$UVB_DISTRO" == "popos" ]]; then
         ui_input "System76 driver" "Pre-install system76-driver? (0/1)" "0"
         _system76_driver="$UI_REPLY"
+    else
+        while true; do
+            ui_input "Security (MAC)" "Mandatory Access Control (apparmor / selinux)" "apparmor"
+            _security="${UI_REPLY,,}"
+            [[ "$_security" == "apparmor" || "$_security" == "selinux" ]] && break
+            ui_warn "Enter 'apparmor' or 'selinux'."
+        done
     fi
 
     ui_input "fwupd" "Pre-install fwupd? (0/1)" "0"
@@ -2332,6 +2436,12 @@ WIZARD_EOF
         echo "TARGET_FWUPD=${_fwupd}"
         echo "TARGET_OPENSSH_SERVER=${_openssh}"
         echo "TARGET_COCKPIT=${_cockpit}"
+
+        if [[ "$UVB_DISTRO" == "ubuntu" ]]; then
+            echo ""
+            echo "# --- Security (Ubuntu only) ---"
+            echo "TARGET_SECURITY=${_security}"
+        fi
 
         if [[ "$UVB_OUTPUT_KIND" != "iso" ]]; then
             echo ""
@@ -2420,6 +2530,11 @@ function print_common_help_options() {
     printf '  %-38s %s\n' "--[no-]fwupd" "Pre-install fwupd (blocked during build otherwise)"
     printf '  %-38s %s\n' "--[no-]openssh-server" "Pre-install openssh-server"
     printf '  %-38s %s\n' "--[no-]cockpit" "Pre-install Cockpit web admin console"
+    if [[ "$UVB_DISTRO" == "ubuntu" ]]; then
+        echo
+        echo "SECURITY (Ubuntu only)"
+        printf '  %-38s %s\n' "--security=apparmor|selinux" "MAC framework: apparmor (default) or selinux"
+    fi
     echo
     echo "LOCALE, UI & SCREEN"
     printf '  %-38s %s\n' "--locale=LOCALE" "System locale (e.g. en_US.UTF-8)"
@@ -2494,6 +2609,7 @@ function print_build_summary() {
     fi
     ui_kv "Pacstall (PPR)"  "${TARGET_PACSTALL:-1}"
     [[ "$UVB_DISTRO" == "popos" ]] && ui_kv "System76 driver" "${TARGET_SYSTEM76_DRIVER:-0}"
+    [[ "$UVB_DISTRO" == "ubuntu" ]] && ui_kv "Security (MAC)" "${TARGET_SECURITY:-apparmor}"
     ui_kv "fwupd"           "${TARGET_FWUPD:-0}  (blocked during build otherwise)"
     ui_kv "OpenSSH server"  "${TARGET_OPENSSH_SERVER:-0}"
     ui_kv "Cockpit"         "${TARGET_COCKPIT:-0}"
@@ -2529,7 +2645,7 @@ function host_main() {
     local cli_fwupd_set=0 cli_fwupd=0 cli_openssh_set=0 cli_openssh=0 cli_cockpit_set=0 cli_cockpit=0
     local cli_locale="" cli_keyboard_layout="" cli_keyboard_variant=""
     local cli_config="" cli_interactive="" cli_hooks_dir="" cli_ui=""
-    local cli_network="" cli_alloc="" cli_firmware="" cli_disk_size="" cli_profile=""
+    local cli_network="" cli_security="" cli_alloc="" cli_firmware="" cli_disk_size="" cli_profile=""
     local cli_user_mode="" cli_username="" cli_password="" cli_fullname="" cli_hostname="" cli_formats=""
     local cli_screen_set=0 cli_screen=0 cli_gen_config=0
     local args=()
@@ -2588,6 +2704,8 @@ function host_main() {
             --keyboard-variant)   _need_opt_val $# "$1"; cli_keyboard_variant="$2"; shift 2 ;;
             --network=*)          cli_network="${1#--network=}"; shift ;;
             --network)            _need_opt_val $# "$1"; cli_network="$2"; shift 2 ;;
+            --security=*)         cli_security="${1#--security=}"; shift ;;
+            --security)           _need_opt_val $# "$1"; cli_security="$2"; shift 2 ;;
             --alloc-tool=*)       cli_alloc="${1#--alloc-tool=}"; shift ;;
             --alloc-tool)         _need_opt_val $# "$1"; cli_alloc="$2"; shift 2 ;;
             --firmware=*)         cli_firmware="${1#--firmware=}"; shift ;;
@@ -2715,6 +2833,7 @@ function host_main() {
     [[ -n "$cli_keyboard_layout" ]]        && export TARGET_KEYBOARD_LAYOUT="$cli_keyboard_layout"
     [[ -n "$cli_keyboard_variant" ]]       && export TARGET_KEYBOARD_VARIANT="$cli_keyboard_variant"
     [[ -n "$cli_network" ]]                && export TARGET_NETWORK_STACK="$cli_network"
+    [[ -n "$cli_security" ]]               && export TARGET_SECURITY="$cli_security"
     [[ -n "$cli_alloc" ]]                  && export TARGET_IMG_ALLOC="$cli_alloc"
     [[ -n "$cli_firmware" ]]               && export TARGET_FIRMWARE="$cli_firmware"
     [[ -n "$cli_disk_size" ]]              && export TARGET_DISK_SIZE_GB="$cli_disk_size"
@@ -2777,6 +2896,7 @@ function host_main() {
         resolve_system76_driver_choice
     fi
     resolve_optional_service_choices
+    resolve_security_choice
     if [[ "$UVB_OUTPUT_KIND" != "iso" ]]; then
         disk_image_resolve_credentials
     fi
@@ -2924,6 +3044,7 @@ function chroot_main() {
     export TARGET_FWUPD="${TARGET_FWUPD:-0}"
     export TARGET_OPENSSH_SERVER="${TARGET_OPENSSH_SERVER:-0}"
     export TARGET_COCKPIT="${TARGET_COCKPIT:-0}"
+    export TARGET_SECURITY="${TARGET_SECURITY:-apparmor}"
 
     check_common_settings
     if [[ "$UVB_OUTPUT_KIND" == "iso" ]]; then

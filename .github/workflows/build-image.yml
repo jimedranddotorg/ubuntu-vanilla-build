@@ -118,6 +118,13 @@ on:
         description: "Pre-install Cockpit web admin console"
         type: boolean
         default: false
+      security:
+        description: "Security MAC framework (Ubuntu only: apparmor or selinux)"
+        type: choice
+        options:
+          - apparmor
+          - selinux
+        default: apparmor
       firmware:
         description: "Disk image firmware (auto = hybrid for amd64 removable, else uefi)"
         type: choice
@@ -202,6 +209,7 @@ jobs:
       IN_PACSTALL: ${{ inputs.pacstall }}
       IN_OPENSSH_SERVER: ${{ inputs.openssh_server }}
       IN_COCKPIT: ${{ inputs.cockpit }}
+      IN_SECURITY: ${{ inputs.security }}
       IN_FIRMWARE: ${{ inputs.firmware }}
       IN_DISK_SIZE_GB: ${{ inputs.disk_size_gb }}
       IN_VM_FORMATS: ${{ inputs.vm_formats }}
@@ -308,6 +316,11 @@ jobs:
               "TARGET_PACSTALL": "1" if os.environ["IN_PACSTALL"] == "true" else "0",
               "TARGET_COCKPIT": "1" if os.environ["IN_COCKPIT"] == "true" else "0",
           }
+          if distro == "ubuntu":
+              input_kv["TARGET_SECURITY"] = os.environ["IN_SECURITY"]
+          elif os.environ["IN_SECURITY"] != "apparmor":
+              print("::error::security='selinux' is only supported for Ubuntu builds.", file=sys.stderr)
+              sys.exit(1)
 
           if os.environ["IN_PROFILE"] == "desktop":
               desktop = os.environ["IN_DESKTOP"]
@@ -423,6 +436,9 @@ jobs:
               sys.exit(1)
           if merged.get("TARGET_FIREFOX_POPOS") == "1" and distro != "popos":
               print("::error::'firefox-popos' is only available for Pop!_OS builds.", file=sys.stderr)
+              sys.exit(1)
+          if merged.get("TARGET_SECURITY", "apparmor") == "selinux" and distro != "ubuntu":
+              print("::error::TARGET_SECURITY='selinux' is only supported for Ubuntu builds.", file=sys.stderr)
               sys.exit(1)
           if arch == "arm64" and output != "iso" and fw == "hybrid":
               print("::error::ARM64 disk images only support UEFI firmware (set firmware to 'auto' or 'uefi').", file=sys.stderr)

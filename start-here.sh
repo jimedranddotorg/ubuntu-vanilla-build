@@ -491,6 +491,14 @@ run_multi_build_wizard() {
             desk_arg=" --desktop=${q_desk}"
         fi
 
+        local sec_arg=""
+        if [[ "$q_distro" == "ubuntu" ]]; then
+            ui_menu "Security (#${idx})" "Select Mandatory Access Control (Ubuntu only):" "apparmor" \
+                "apparmor" "AppArmor (Ubuntu default)" \
+                "selinux"  "SELinux (selinux-basics + selinux-policy-default)"
+            sec_arg=" --security=${UI_REPLY}"
+        fi
+
         local est_sz=16
         [[ "$q_output" == "img" || "$q_output" == "vm" ]] && est_sz=32
         local est_gb
@@ -502,7 +510,7 @@ run_multi_build_wizard() {
         queue_scripts+=("$b_script")
         queue_outputs+=("$q_output")
         queue_labels+=("${q_distro}-${q_output}-${q_rel}-${q_arch}-${q_prof}")
-        queue_args+=("--release=${q_rel} --arch=${q_arch} --profile=${q_prof} --kernel=${q_kern}${desk_arg}")
+        queue_args+=("--release=${q_rel} --arch=${q_arch} --profile=${q_prof} --kernel=${q_kern}${desk_arg}${sec_arg}")
 
         ui_info "Queued #${idx}: ${q_distro}/${q_output} (${q_rel}, ${q_arch}, ${q_prof}, ${q_desk}). Estimated space: ${total_req_gb} GB / ${avail_gb} GB free."
         if (( total_req_gb >= avail_gb )); then

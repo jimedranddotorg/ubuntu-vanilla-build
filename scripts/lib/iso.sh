@@ -379,6 +379,10 @@ fi
 EOF
         fi
     elif [[ "$arch" == "arm64" ]]; then
+        local live_mac_args=""
+        if [[ "$UVB_DISTRO" == "ubuntu" && "${TARGET_SECURITY:-apparmor}" == "selinux" ]]; then
+            live_mac_args=" apparmor=0 security=selinux noautorelabel"
+        fi
         cat <<EOF > boot/grub/grub.cfg
 search --set=root --file /${iso_marker}
 
@@ -389,12 +393,12 @@ set default="0"
 set timeout=30
 
 menuentry "$GRUB_LIVEBOOT_LABEL" {
-    linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
+    linux /casper/vmlinuz boot=casper nopersistent${live_mac_args} quiet splash ---
     initrd /casper/initrd
 }
 
 menuentry "Check the disc for defects" {
-    linux /casper/vmlinuz boot=casper integrity-check quiet splash ---
+    linux /casper/vmlinuz boot=casper integrity-check${live_mac_args} quiet splash ---
     initrd /casper/initrd
 }
 
@@ -407,6 +411,10 @@ menuentry "Test memory with Memtest86+ (UEFI ARM64)" {
 }
 EOF
     else
+        local live_mac_args=""
+        if [[ "$UVB_DISTRO" == "ubuntu" && "${TARGET_SECURITY:-apparmor}" == "selinux" ]]; then
+            live_mac_args=" apparmor=0 security=selinux noautorelabel"
+        fi
         cat <<EOF > boot/grub/grub.cfg
 search --set=root --file /${iso_marker}
 
@@ -417,12 +425,12 @@ set default="0"
 set timeout=30
 
 menuentry "$GRUB_LIVEBOOT_LABEL" {
-    linux /casper/vmlinuz boot=casper nopersistent quiet splash ---
+    linux /casper/vmlinuz boot=casper nopersistent${live_mac_args} quiet splash ---
     initrd /casper/initrd
 }
 
 menuentry "Check the disc for defects" {
-    linux /casper/vmlinuz boot=casper integrity-check quiet splash ---
+    linux /casper/vmlinuz boot=casper integrity-check${live_mac_args} quiet splash ---
     initrd /casper/initrd
 }
 
@@ -690,6 +698,10 @@ function iso_print_build_result() {
         echo "    CLI/TTY-only ISO: boots to a live TTY console; run 'sudo install-system'."
     elif [[ "${TARGET_INSTALLER:-calamares}" == "cli" ]]; then
         echo "    Desktop uses CLI installer: open a terminal and run 'sudo install-system'."
+    fi
+    if [[ "$UVB_DISTRO" == "ubuntu" && "${TARGET_SECURITY:-apparmor}" == "selinux" ]]; then
+        echo "    SELinux enabled: installed system auto-relabels on first boot (permissive);"
+        echo "    switch to enforcing afterward with 'sudo selinux-config-enforcing'."
     fi
     echo
     if declare -F popos_print_cosmic_note >/dev/null 2>&1; then

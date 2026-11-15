@@ -2245,6 +2245,10 @@ CHROOT_EOF
           "$TARGET_ROOT/usr/share/applications/install-system.desktop" \
           "$TARGET_ROOT/etc/skel/Desktop/install-system.desktop"
     rm -rf "$TARGET_ROOT/etc/calamares"
+    if [ "$DISTRO_ID" = "ubuntu" ] && [ -f "$TARGET_ROOT/etc/selinux/config" ]; then
+        info "SELinux detected: marking target for first-boot filesystem relabel (/.autorelabel)."
+        touch "$TARGET_ROOT/.autorelabel"
+    fi
     info "Installing language packs for $LOCALE (best-effort, online only)."
     local short="${LOCALE%.*}"           # en_US.UTF-8 -> en_US
     local lang="${short%_*}"             # en_US -> en

@@ -836,6 +836,10 @@ EOF
         --bootloader-id="$boot_id" --uefi-secure-boot --removable --recheck --no-nvram
     in_target update-initramfs -u
     in_target update-grub
+    if [[ "$UVB_DISTRO" == "ubuntu" && "${TARGET_SECURITY:-apparmor}" == "selinux" && -f "$IMG_MOUNT_DIR/etc/selinux/config" ]]; then
+        echo "=====> SELinux: marking image rootfs for first-boot filesystem relabeling (/.autorelabel)"
+        host_priv touch "$IMG_MOUNT_DIR/.autorelabel"
+    fi
 
     if [[ "${TARGET_USER_MODE:-deploy}" == "build" ]]; then
         create_baked_user
@@ -925,6 +929,10 @@ function disk_image_print_build_result() {
         else
             echo "    On first boot, the VM console wizard prompts to create your user account."
         fi
+    fi
+    if [[ "$UVB_DISTRO" == "ubuntu" && "${TARGET_SECURITY:-apparmor}" == "selinux" ]]; then
+        echo "    SELinux enabled: first boot auto-relabels the filesystem and reboots once"
+        echo "    into permissive mode; run 'sudo selinux-config-enforcing' to enforce."
     fi
     echo
     if declare -F popos_print_cosmic_note >/dev/null 2>&1; then

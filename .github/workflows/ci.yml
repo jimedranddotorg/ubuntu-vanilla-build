@@ -114,6 +114,10 @@ jobs:
           ! ./scripts/build.sh --advanced --no-interactive --release=noble --desktop=cosmic --kernel=generic - >/dev/null 2>&1
           ! ./scripts/build.sh --advanced --no-interactive --release=resolute --desktop=cosmic --kernel=generic - >/dev/null 2>&1
 
+          # SELinux security option is Ubuntu-only and rejects invalid values.
+          ! ./scripts/build-popos.sh --advanced --no-interactive --release=noble --security=selinux --kernel=generic - >/dev/null 2>&1
+          ! ./scripts/build.sh --advanced --no-interactive --release=noble --security=smack --kernel=generic - >/dev/null 2>&1
+
           # ARM64 disk images reject hybrid BIOS+UEFI firmware.
           ! ./scripts/build-removable.sh --advanced --no-interactive --release=noble --arch=arm64 --firmware=hybrid --kernel=generic - >/dev/null 2>&1
 

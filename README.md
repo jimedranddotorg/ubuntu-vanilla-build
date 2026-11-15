@@ -96,6 +96,11 @@ cd scripts/
 - **Pacstall**: Installed by default (`--no-pacstall` to skip) by adding the Chaotic PPR APT repository (`https://pacstall.dev/q/ppr`) and installing `pacstall` via `apt-get`.
 - **Optional pre-installs** (default off unless cloud image): `--fwupd`, `--openssh-server` (regenerates unique host keys on first boot), `--cockpit` (from `-backports`), `--ubuntu-studio` (desktop only), and `--system76-driver` (Pop!_OS only).
 
+### Security (AppArmor or SELinux, Ubuntu only)
+- `--security=apparmor|selinux` (or `TARGET_SECURITY=apparmor|selinux`): Choose the Mandatory Access Control framework on **Ubuntu** builds (`build.sh`, `build-img.sh`, `build-vm.sh`, `build-removable.sh`; Pop!_OS builds remain untouched and reject `--security=selinux`).
+  - **`apparmor`** (default): Keeps Ubuntu's standard `apparmor` setup.
+  - **`selinux`**: Purges `apparmor` userspace cleanly, installs `selinux-basics`, `selinux-policy-default`, `selinux-utils`, `policycoreutils`, `checkpolicy`, `setools`, and `auditd`, and writes `/etc/default/grub.d/60-selinux.cfg` (`apparmor=0 security=selinux`). Live ISOs boot with `noautorelabel` to avoid relabeling the read-only SquashFS session, while installed systems (via Calamares, Unofficial CLI Installer, or disk images) touch `/.autorelabel` so the first boot relabels the persistent filesystem automatically in `permissive` mode (switch to enforcing afterward with `sudo selinux-config-enforcing`).
+
 ---
 
 ## Pop!_OS Notes
