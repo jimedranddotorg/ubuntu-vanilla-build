@@ -376,9 +376,18 @@ function normalize_desktop_variant() {
     desktop="${desktop,,}"
     case "$desktop" in
         kde) desktop="kde-plasma" ;;
+        pop-cosmic) desktop="cosmic" ;;
     esac
     if [[ ! "$desktop" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-        ui_err "TARGET_DESKTOP must be a slug like cli, gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
+        if [[ "$UVB_DISTRO" == "popos" ]]; then
+            ui_err "TARGET_DESKTOP must be a slug like cli, cosmic, gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
+        else
+            ui_err "TARGET_DESKTOP must be a slug like cli, gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, or kde-plasma (got: '${TARGET_DESKTOP:-}')."
+        fi
+        exit 1
+    fi
+    if [[ "$desktop" == "cosmic" && "$UVB_DISTRO" != "popos" ]]; then
+        ui_err "TARGET_DESKTOP=cosmic is only supported on Pop!_OS builds (use scripts/build-popos*.sh)."
         exit 1
     fi
     export TARGET_DESKTOP="$desktop"
@@ -665,6 +674,13 @@ function customize_image() {
         cli)
             echo "=====> profile: CLI/TTY-only -- no desktop environment installed"
             ;;
+        cosmic)
+            if [[ "$UVB_DISTRO" != "popos" ]]; then
+                >&2 echo "ERROR: TARGET_DESKTOP=cosmic is only supported on Pop!_OS builds."
+                exit 1
+            fi
+            install_popos_cosmic_desktop
+            ;;
         gnome)
             echo "=====> desktop flavor: gnome"
             if [[ "${TARGET_GNOME_INSTALL_RECOMMENDS:-0}" == "1" ]]; then
@@ -677,6 +693,8 @@ function customize_image() {
             ;;
         xfce)
             echo "=====> desktop flavor: xfce (PipeWire audio)"
+            local xfce_distro_font="fonts-ubuntu"
+            [[ "$UVB_DISTRO" == "popos" ]] && xfce_distro_font="pop-fonts"
             install_lightdm_desktop \
                 xfce4 \
                 xfce4-goodies \
@@ -708,7 +726,7 @@ function customize_image() {
                 synaptic \
                 xdg-user-dirs \
                 xdg-user-dirs-gtk \
-                fonts-ubuntu \
+                "$xfce_distro_font" \
                 fonts-noto-core \
                 hunspell-en-us \
                 onboard \
@@ -751,7 +769,7 @@ function customize_image() {
             echo "=====> SDDM: forcing Plasma's Breeze theme"
             apt-get install -y --no-install-recommends sddm sddm-theme-breeze
             install -d /etc/sddm.conf.d
-            cat <<'EOF' > /etc/sddm.conf.d/10-ubuntu-vanilla-breeze.conf
+            cat <<'EOF' > /etc/sddm.conf.d/10-breeze.conf
 [Theme]
 Current=breeze
 EOF
@@ -776,7 +794,21 @@ EOF
     esac
 
     if [[ "${TARGET_DESKTOP:-gnome}" != "cli" ]]; then
-        apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
+        if [[ "$UVB_DISTRO" == "popos" ]]; then
+            install_popos_plymouth
+        else
+            apt-get install -y plymouth plymouth-label plymouth-theme-ubuntu-text
+        fi
+    elif [[ "$UVB_DISTRO" == "popos" ]]; then
+        ensure_popos_plymouth_alternatives
+    fi
+
+    if [[ "$UVB_DISTRO" == "popos" ]]; then
+        install_popos_grub_branding
+        if [[ "${TARGET_DESKTOP:-gnome}" != "cli" && "${TARGET_DESKTOP:-gnome}" != "cosmic" ]]; then
+            install_popos_desktop_branding
+        fi
+        cleanup_popos_ubuntu_remnants
     fi
 
     apt-get install -y curl wget ca-certificates gnupg
@@ -814,11 +846,10 @@ EOF
     fi
 
     if [[ "$UVB_OUTPUT_KIND" == "iso" ]]; then
-        local live_user="ubuntu" live_host="ubuntu" live_pass="ubuntu" live_sys="Ubuntu"
+        local live_user="ubuntu" live_host="ubuntu" live_sys="Ubuntu"
         if [[ "$UVB_DISTRO" == "popos" ]]; then
             live_user="popos"
             live_host="popos"
-            live_pass="popos"
             live_sys="Pop!_OS"
         fi
         cat <<EOF > /etc/casper.conf
@@ -833,10 +864,12 @@ EOF
     if [[ "${TARGET_OPENSSH_SERVER:-0}" == "1" ]]; then
         echo "=====> OpenSSH server: pre-installing"
         apt-get install -y openssh-server
+        # Keep Before=ssh.service (never Before=ssh.socket) to avoid a systemd
+        # ordering cycle between sockets.target, basic.target, and multi-user.target.
         cat <<'EOF' > /etc/systemd/system/ssh-host-keys-regen.service
 [Unit]
 Description=Regenerate missing SSH host keys
-Before=ssh.service ssh.socket
+Before=ssh.service sshd.service sshd@.service
 ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
 
 [Service]
@@ -848,42 +881,6 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
         systemctl enable ssh-host-keys-regen.service
-
-        if [[ "$UVB_OUTPUT_KIND" == "iso" ]]; then
-            echo "=====> OpenSSH server (live ISO): enabling ${live_user}@${live_host} (password: ${live_pass})"
-            install -d /etc/ssh/sshd_config.d /usr/local/sbin
-            cat <<'EOF' > /etc/ssh/sshd_config.d/01-uvb-live-ssh.conf
-# Live ISO SSH password login (removed on target installation)
-PasswordAuthentication yes
-KbdInteractiveAuthentication yes
-EOF
-            cat <<EOF > /usr/local/sbin/uvb-live-ssh-setup
-#!/bin/bash
-set -eu
-grep -qw 'boot=casper' /proc/cmdline || exit 0
-if id "${live_user}" >/dev/null 2>&1; then
-    printf '%s:%s\n' "${live_user}" "${live_pass}" | chpasswd
-    passwd -u "${live_user}" >/dev/null 2>&1 || true
-fi
-EOF
-            chmod 0755 /usr/local/sbin/uvb-live-ssh-setup
-            cat <<'EOF' > /etc/systemd/system/uvb-live-ssh-user.service
-[Unit]
-Description=Configure live ISO SSH password for live user
-ConditionKernelCommandLine=boot=casper
-After=systemd-user-sessions.service
-Before=ssh.service ssh.socket cockpit.socket
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/uvb-live-ssh-setup
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-            systemctl enable uvb-live-ssh-user.service
-        fi
     else
         echo "=====> OpenSSH server: not pre-installed"
     fi
@@ -1687,17 +1684,28 @@ function resolve_desktop_choice() {
 
     local prompt="Choose a desktop environment:"
     if [[ "$UVB_DISTRO" == "popos" ]]; then
-        prompt="Choose a desktop environment (pop-desktop/COSMIC are excluded; see post-build note):"
+        prompt="Choose a desktop environment (COSMIC uses CLI installer + GRUB; others use Calamares on ISOs):"
+        ui_menu "Desktop environment" "$prompt" "gnome" \
+            "gnome"      "Vanilla GNOME desktop + Pop!_OS theme" \
+            "cosmic"     "Pop!_OS COSMIC desktop (full Pop stack, CLI installer + GRUB)" \
+            "budgie"     "Budgie desktop + LightDM (slick-greeter)" \
+            "cinnamon"   "Cinnamon desktop + LightDM (slick-greeter)" \
+            "kde-plasma" "KDE Plasma + SDDM (Breeze theme pinned)" \
+            "lxde"       "Lightweight classic LXDE + LightDM" \
+            "lxqt"       "Lightweight Qt LXQt + SDDM" \
+            "mate"       "MATE traditional desktop + LightDM" \
+            "xfce"       "XFCE + goodies + PipeWire + LightDM + labwc"
+    else
+        ui_menu "Desktop environment" "$prompt" "gnome" \
+            "gnome"      "Vanilla GNOME desktop (minimal recommends by default)" \
+            "budgie"     "Budgie desktop + LightDM (slick-greeter)" \
+            "cinnamon"   "Cinnamon desktop + LightDM (slick-greeter)" \
+            "kde-plasma" "KDE Plasma + SDDM (Breeze theme pinned)" \
+            "lxde"       "Lightweight classic LXDE + LightDM" \
+            "lxqt"       "Lightweight Qt LXQt + SDDM" \
+            "mate"       "MATE traditional desktop + LightDM" \
+            "xfce"       "XFCE + goodies + PipeWire + LightDM + labwc"
     fi
-    ui_menu "Desktop environment" "$prompt" "gnome" \
-        "gnome"      "Vanilla GNOME desktop (minimal recommends by default)" \
-        "budgie"     "Budgie desktop + LightDM (slick-greeter)" \
-        "cinnamon"   "Cinnamon desktop + LightDM (slick-greeter)" \
-        "kde-plasma" "KDE Plasma + SDDM (Breeze theme pinned)" \
-        "lxde"       "Lightweight classic LXDE + LightDM" \
-        "lxqt"       "Lightweight Qt LXQt + SDDM" \
-        "mate"       "MATE traditional desktop + LightDM" \
-        "xfce"       "XFCE + goodies + PipeWire + LightDM + labwc"
     export TARGET_DESKTOP="$UI_REPLY"
     ui_ok "TARGET_DESKTOP=$TARGET_DESKTOP"
 }
@@ -2143,11 +2151,22 @@ function generate_config_wizard() {
     _desktop="cli" _kde_pkg="kde-standard" _mate_pkg="mate-desktop-environment" _mate_extras="0" _gnome_rec="0"
     if [[ "$_profile" == "desktop" ]]; then
         while true; do
-            ui_input "Desktop" "Desktop (gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)" "gnome"
+            if [[ "$UVB_DISTRO" == "popos" ]]; then
+                ui_input "Desktop" "Desktop (gnome, cosmic, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)" "gnome"
+            else
+                ui_input "Desktop" "Desktop (gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma)" "gnome"
+            fi
             _desktop="${UI_REPLY,,}"
             [[ "$_desktop" == "kde" ]] && _desktop="kde-plasma"
+            [[ "$_desktop" == "pop-cosmic" ]] && _desktop="cosmic"
             case "$_desktop" in
                 gnome|xfce|lxde|lxqt|mate|cinnamon|budgie|kde-plasma) break ;;
+                cosmic)
+                    if [[ "$UVB_DISTRO" == "popos" ]]; then
+                        break
+                    fi
+                    ui_warn "'cosmic' is only available on Pop!_OS builds."
+                    ;;
                 *) ui_warn "Unsupported desktop '$_desktop'." ;;
             esac
         done
@@ -2317,7 +2336,7 @@ WIZARD_EOF
             echo "TARGET_DISK_SIZE_GB=${_disk_size}"
             echo "TARGET_USER_MODE=${_user_mode}"
             [[ -n "$_vm_formats" ]] && echo "TARGET_VM_FORMATS=${_vm_formats}"
-        elif [[ "$_profile" == "cli" ]]; then
+        elif [[ "$_profile" == "cli" || "$_desktop" == "cosmic" ]]; then
             echo "TARGET_INSTALLER=cli"
         else
             echo "TARGET_INSTALLER=calamares"
@@ -2374,7 +2393,11 @@ function print_common_help_options() {
     printf '  %-38s %s\n' "--mirror=URL" "APT mirror (defaults to archive/ports by arch)"
     echo
     echo "DESKTOP & BROWSERS"
-    printf '  %-38s %s\n' "--desktop=NAME" "gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma"
+    if [[ "$UVB_DISTRO" == "popos" ]]; then
+        printf '  %-38s %s\n' "--desktop=NAME" "gnome, cosmic, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma"
+    else
+        printf '  %-38s %s\n' "--desktop=NAME" "gnome, xfce, lxde, lxqt, mate, cinnamon, budgie, kde-plasma"
+    fi
     printf '  %-38s %s\n' "--kde=TIER" "kde-full | kde-standard (default) | kde-plasma-desktop"
     printf '  %-38s %s\n' "--mate=full|core / --[no-]mate-extras" "MATE package tier and optional extras"
     printf '  %-38s %s\n' "--network=networkd|network-manager" "Network stack for CLI profile"
@@ -2445,7 +2468,7 @@ function print_build_summary() {
             ;;
     esac
     if [[ "$UVB_OUTPUT_KIND" == "iso" ]]; then
-        ui_kv "Installer" "$([[ "${TARGET_IMAGE_PROFILE}" == "cli" ]] && echo "cli (install-system)" || echo "calamares + install-system")"
+        ui_kv "Installer" "$([[ "${TARGET_INSTALLER:-calamares}" == "cli" ]] && echo "cli (install-system)" || echo "calamares + install-system")"
     else
         disk_image_print_summary_fields
     fi

@@ -4,7 +4,7 @@ The eight entrypoints in `scripts/` source shared modules under `scripts/lib/`:
 
 - `scripts/lib/ui.sh`: semantic CLI logging (`NO_COLOR` / `TERM=dumb` safe), `whiptail`/`dialog` TUI wrappers, storage estimation, and GNU `screen` session launcher.
 - `scripts/lib/common.sh`: CLI/config parsing, release/arch/mirror resolution, cross-arch `qemu-user-static` handling, `debootstrap`, deb822 APT setup, desktop/browser stacks, Chaotic PPR Pacstall install, hooks, and Advanced mode lifecycle.
-- `scripts/lib/popos.sh`: `apt.pop-os.org` repository setup, native Pop!_OS Firefox deb verification, `system76-driver`, and COSMIC notes.
+- `scripts/lib/popos.sh`: `apt.pop-os.org` repository setup, `pop-default-settings` branding with diverted blanket pin + scoped `pop-os-release` pin, Pop!_OS Plymouth/GRUB/GTK theming, COSMIC desktop variant (`--desktop=cosmic`), native Pop!_OS Firefox deb verification, and `system76-driver`.
 - `scripts/lib/iso.sh`: live ISO package installation (`desktop` and `cli` profiles), Calamares + `/usr/local/bin/install-system` packaging, Memtest86+ v9.00, `amd64` hybrid and `arm64` UEFI `xorriso` generation.
 - `scripts/lib/disk-image.sh`: `cloud`, `vm`, and `removable` raw GPT `.img` assembly, NoCloud `growpart` seeding, first-boot console wizard, and `qemu-img` exports.
 

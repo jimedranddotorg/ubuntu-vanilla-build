@@ -477,9 +477,16 @@ run_multi_build_wizard() {
         q_desk="cli"
         local desk_arg=""
         if [[ "$q_prof" == "desktop" ]]; then
-            ui_menu "Desktop (#${idx})" "Select desktop:" "gnome" \
-                "gnome" "Vanilla GNOME" "xfce" "XFCE + PipeWire" "kde-plasma" "KDE Plasma" \
-                "mate" "MATE" "cinnamon" "Cinnamon" "budgie" "Budgie" "lxde" "LXDE" "lxqt" "LXQt"
+            if [[ "$q_distro" == "popos" ]]; then
+                ui_menu "Desktop (#${idx})" "Select desktop:" "gnome" \
+                    "gnome" "Vanilla GNOME + Pop!_OS theme" "cosmic" "Pop!_OS COSMIC (CLI installer + GRUB)" \
+                    "xfce" "XFCE + PipeWire" "kde-plasma" "KDE Plasma" \
+                    "mate" "MATE" "cinnamon" "Cinnamon" "budgie" "Budgie" "lxde" "LXDE" "lxqt" "LXQt"
+            else
+                ui_menu "Desktop (#${idx})" "Select desktop:" "gnome" \
+                    "gnome" "Vanilla GNOME" "xfce" "XFCE + PipeWire" "kde-plasma" "KDE Plasma" \
+                    "mate" "MATE" "cinnamon" "Cinnamon" "budgie" "Budgie" "lxde" "LXDE" "lxqt" "LXQt"
+            fi
             q_desk="$UI_REPLY"
             desk_arg=" --desktop=${q_desk}"
         fi

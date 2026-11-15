@@ -14,7 +14,7 @@
 # TARGET_UBUNTU_MIRROR=                # Optional override (defaults to archive/ports/pop-os by distro & arch)
 # TARGET_KERNEL_FLAVOR=generic         # Ubuntu: generic | lowlatency ; Pop!_OS: system76 | generic | lowlatency
 # TARGET_KERNEL_PACKAGE=               # Optional explicit kernel metapackage override
-# TARGET_DESKTOP=gnome                 # cli | gnome | xfce | lxde | lxqt | mate | cinnamon | budgie | kde-plasma
+# TARGET_DESKTOP=gnome                 # cli | cosmic (Pop!_OS only) | gnome | xfce | lxde | lxqt | mate | cinnamon | budgie | kde-plasma
 # TARGET_NETWORK_STACK=network-manager # networkd | network-manager (CLI profile; desktop always uses NetworkManager)
 
 # --- Desktop Options ---
@@ -51,7 +51,7 @@
 # TARGET_VM_FORMATS=qcow2              # qcow2,vdi,vmdk,vhdx | all | none (VM builders only)
 
 # --- ISO Options (build.sh / build-popos.sh) ---
-# TARGET_INSTALLER=calamares           # calamares (desktop) or cli (when TARGET_IMAGE_PROFILE=cli)
+# TARGET_INSTALLER=calamares           # calamares (desktop, except cosmic) or cli (cli profile / cosmic)
 # GRUB_LIVEBOOT_LABEL=Try Ubuntu without installing
 
 # --- Locale & Keyboard (Unattended) ---

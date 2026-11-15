@@ -45,7 +45,9 @@ jobs:
           if ! command -v shellcheck >/dev/null 2>&1; then
             sudo apt-get update && sudo apt-get install -y shellcheck
           fi
-          shellcheck -x -P scripts start-here.sh scripts/build*.sh scripts/cli-installer/install-system
+          jobs="$(nproc 2>/dev/null || echo 2)"
+          printf '%s\0' start-here.sh scripts/build*.sh scripts/cli-installer/install-system \
+            | xargs -0 -n 1 -P "$jobs" shellcheck -x -P scripts
           shellcheck -s bash -e SC2034 -x -P scripts/lib scripts/lib/*.sh
 
       - name: YAML, Calamares parity, and config allowlist checks
@@ -106,9 +108,11 @@ jobs:
           ! ./scripts/build.sh --advanced --no-interactive --release=jammy --kernel=generic - >/dev/null 2>&1
           ! ./scripts/build.sh --advanced --no-interactive --release=noble --installer=ubiquity --kernel=generic - >/dev/null 2>&1
 
-          # Pop!_OS rejects devel and rejects system76 kernel on arm64.
+          # Pop!_OS rejects devel and rejects system76 kernel on arm64; Ubuntu rejects cosmic desktop.
           ! ./scripts/build-popos.sh --advanced --no-interactive --release=devel --kernel=generic - >/dev/null 2>&1
           ! ./scripts/build-popos.sh --advanced --no-interactive --release=noble --arch=arm64 --kernel=system76 - >/dev/null 2>&1
+          ! ./scripts/build.sh --advanced --no-interactive --release=noble --desktop=cosmic --kernel=generic - >/dev/null 2>&1
+          ! ./scripts/build.sh --advanced --no-interactive --release=resolute --desktop=cosmic --kernel=generic - >/dev/null 2>&1
 
           # ARM64 disk images reject hybrid BIOS+UEFI firmware.
           ! ./scripts/build-removable.sh --advanced --no-interactive --release=noble --arch=arm64 --firmware=hybrid --kernel=generic - >/dev/null 2>&1

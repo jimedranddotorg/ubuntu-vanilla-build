@@ -42,10 +42,11 @@ on:
           - cli
         default: desktop
       desktop:
-        description: "Desktop environment (desktop profile only)"
+        description: "Desktop environment (desktop profile only; cosmic is Pop!_OS only)"
         type: choice
         options:
           - gnome
+          - cosmic
           - xfce
           - kde-plasma
           - mate
@@ -106,7 +107,7 @@ on:
         type: boolean
         default: true
       openssh_server:
-        description: "OpenSSH server (auto enables on cloud img; ISO uses ubuntu/popos live password)"
+        description: "OpenSSH server (auto enables on cloud img)"
         type: choice
         options:
           - auto
@@ -410,6 +411,9 @@ jobs:
 
           if distro == "popos" and rel == "devel":
               print("::error::Pop!_OS does not support the 'devel' suite. Choose 'noble' or 'resolute'.", file=sys.stderr)
+              sys.exit(1)
+          if desk == "cosmic" and distro != "popos":
+              print("::error::Desktop 'cosmic' is only available for Pop!_OS builds.", file=sys.stderr)
               sys.exit(1)
           if kern == "system76" and distro != "popos":
               print("::error::Kernel 'system76' is only available for Pop!_OS builds.", file=sys.stderr)

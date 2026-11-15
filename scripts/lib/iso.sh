@@ -5,7 +5,7 @@ HOST_CMD=(setup_host debootstrap run_chroot build_iso)
 CHROOT_CMD=(chroot_prepare install_pkg build_image finish_up)
 
 function default_target_package_remove() {
-    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" || "${TARGET_INSTALLER:-calamares}" == "cli" ]]; then
         echo "casper discover laptop-detect os-prober"
     else
         echo "calamares casper discover laptop-detect os-prober"
@@ -13,8 +13,14 @@ function default_target_package_remove() {
 }
 
 function iso_check_settings() {
+    local requested_installer="${TARGET_INSTALLER:-}"
     export TARGET_INSTALLER="${TARGET_INSTALLER:-calamares}"
     if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+        export TARGET_INSTALLER="cli"
+    elif [[ "${TARGET_DESKTOP:-gnome}" == "cosmic" ]]; then
+        if [[ "$requested_installer" == "calamares" ]]; then
+            ui_warn "COSMIC desktop ISO uses the CLI installer (install-system) and GRUB instead of Calamares."
+        fi
         export TARGET_INSTALLER="cli"
     else
         case "${TARGET_INSTALLER}" in
@@ -24,7 +30,7 @@ function iso_check_settings() {
                 exit 1
                 ;;
             *)
-                ui_err "TARGET_INSTALLER must be calamares (or cli when --profile=cli; got: '${TARGET_INSTALLER}')."
+                ui_err "TARGET_INSTALLER must be calamares (or cli when --profile=cli or --desktop=cosmic; got: '${TARGET_INSTALLER}')."
                 exit 1
                 ;;
         esac
@@ -50,7 +56,7 @@ function iso_host_help() {
     print_common_help_options
     echo
     echo "ISO OPTIONS"
-    printf '  %-38s %s\n' "--installer=calamares" "Calamares GUI installer (desktop profile)"
+    printf '  %-38s %s\n' "--installer=calamares" "Calamares GUI installer (desktop profile; cosmic uses CLI installer)"
     printf '  %-38s %s\n' "GRUB_LIVEBOOT_LABEL=TEXT" "Live boot menu entry label"
     echo
     echo "OUTPUT"
@@ -110,11 +116,11 @@ function install_cli_installer_into_live() {
         echo "  WARN  /root/install-system was not copied into chroot; skipping /usr/local/bin/install-system." >&2
     fi
 
-    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
+    if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" || "${TARGET_INSTALLER:-calamares}" == "cli" ]]; then
         install -d /etc/profile.d
         cat <<'EOF' > /etc/profile.d/99-uvb-live-cli.sh
 if [ -f /cdrom/casper/filesystem.squashfs ] && grep -qw 'boot=casper' /proc/cmdline 2>/dev/null; then
-    printf '\n  Live CLI environment ready. To install to disk, run:\n'
+    printf '\n  Live environment ready. To install to disk, run:\n'
     printf '    sudo install-system\n\n'
 fi
 EOF
@@ -191,6 +197,8 @@ EOF
             chmod 0600 /etc/netplan/01-dhcp-all.yaml
             systemctl enable systemd-networkd.service || true
         fi
+    elif [[ "${TARGET_INSTALLER:-calamares}" == "cli" ]]; then
+        echo "=====> desktop '${TARGET_DESKTOP:-}': skipping Calamares GUI installer (CLI install-system + GRUB)"
     else
         echo "=====> live installer: calamares"
         apt-get install -y --no-install-recommends calamares
@@ -262,10 +270,12 @@ function build_image() {
     fi
     rm -f install/memtest86.zip
 
-    touch ubuntu
+    local iso_marker="ubuntu"
+    [[ "$UVB_DISTRO" == "popos" ]] && iso_marker="popos"
+    touch "$iso_marker"
     if [[ "$arch" == "arm64" ]]; then
         cat <<EOF > boot/grub/grub.cfg
-search --set=root --file /ubuntu
+search --set=root --file /${iso_marker}
 
 insmod all_video
 insmod linux
@@ -293,7 +303,7 @@ menuentry "Test memory with Memtest86+ (UEFI ARM64)" {
 EOF
     else
         cat <<EOF > boot/grub/grub.cfg
-search --set=root --file /ubuntu
+search --set=root --file /${iso_marker}
 
 insmod all_video
 insmod linux
@@ -378,6 +388,7 @@ EOF
         fi
     done
 
+    # Signed Secure Boot grub*.efi binaries hardcode /EFI/ubuntu as their config prefix.
     cp "$shim_bin" "EFI/boot/${efi_boot_name}"
     cp "$mm_bin"   "EFI/boot/${efi_mm_name}"
     cp "$grub_bin" "EFI/boot/${efi_grub_name}"
@@ -568,6 +579,8 @@ function iso_print_build_result() {
     echo "    it in a VM. Every ISO includes /usr/local/bin/install-system for TTY installs."
     if [[ "${TARGET_IMAGE_PROFILE:-desktop}" == "cli" ]]; then
         echo "    CLI/TTY-only ISO: boots to a live TTY console; run 'sudo install-system'."
+    elif [[ "${TARGET_INSTALLER:-calamares}" == "cli" ]]; then
+        echo "    Desktop uses CLI installer: open a terminal and run 'sudo install-system'."
     fi
     echo
     if declare -F popos_print_cosmic_note >/dev/null 2>&1; then

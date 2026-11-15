@@ -80,6 +80,7 @@ cd scripts/
 
 ### Desktop choices
 - `gnome` (`vanilla-gnome-desktop` + `gnome-console`; `--no-install-recommends` by default, or enable recommends via prompt/`TARGET_GNOME_INSTALL_RECOMMENDS=1`; includes `gnome-software-plugin-flatpak`)
+- `cosmic` (**Pop!_OS only**: full Pop!_OS COSMIC desktop stack via `pop-de-cosmic`, `cosmic-*`, `pop-pipewire`, `pop-theme`, `pop-wallpapers`, `system76-power`, `system76-scheduler`; on ISOs it skips `pop-installer` and Calamares and ships `/usr/local/bin/install-system` with GRUB as the default bootloader and a 512 MB ESP. Users who want COSMIC should use the Pop!_OS builders)
 - `xfce` (Xubuntu-equivalent functional stack without `xubuntu-*` branding, `lightdm` + `slick-greeter`, `pipewire-pulse` + `wireplumber`, `labwc`)
 - `kde-plasma` (`kde-standard`, `kde-plasma-desktop`, or `kde-full` via `--kde=`; SDDM pinned to Breeze; Discover Flatpak backend)
 - `mate` (`mate-desktop-environment` or `mate-desktop-environment-core` via `--mate=full|core`, optional `--mate-extras`; `lightdm` + `slick-greeter`)
@@ -100,13 +101,10 @@ cd scripts/
 ## Pop!_OS Notes
 
 - Repositories come from `https://apt.pop-os.org/` (`release`, `proprietary`, `release-ubuntu`; `apt-origin.pop-os.org` fallback per suite; staging excluded).
-- Only `base-files`, `pop-*`, `linux-system76*`, and `system76-*` are pinned (`o=pop-os-release`, priority 1001) so standard Ubuntu desktop metapackages still resolve without dependency conflicts.
+- `pop-default-settings` (plus `pop-default-settings-zram`, `pop-default-settings-ntsync`), `pop-plymouth-theme` (`plymouth-theme-pop-basic`), `grub-theme-pop` (`amd64`), `GRUB_DISTRIBUTOR="Pop!_OS"`, and `pop-theme` + `pop-wallpapers` (desktop profiles) provide Pop!_OS OS identity, boot splash, GRUB menu, and GTK/icon/sound theming without Ubuntu branding (`plymouth-theme-ubuntu-text` is omitted/purged).
+- `pop-default-settings`'s blanket `Package: *` pin (`1001`) is diverted outside `/etc/apt/preferences.d/` and replaced by a scoped pin (`o=pop-os-release`, priority `1001`) for Pop!_OS, COSMIC, and System76 packages so standard Ubuntu desktop metapackages like `vanilla-gnome-desktop` stay installable without `update-manager-core` dependency conflicts.
 - `linux-system76` (`--kernel=system76`, default on `amd64`) is `amd64`-only; `arm64` Pop!_OS builds use Ubuntu HWE `generic` or `lowlatency`.
-- **`pop-desktop` and COSMIC are intentionally excluded** due to Calamares bugs. On `noble` and `resolute` Pop!_OS builds, install COSMIC after booting the installed system:
-  ```bash
-  sudo apt update
-  sudo apt install cosmic-session
-  ```
+- **COSMIC desktop (`--desktop=cosmic`)**: installs the full Pop!_OS COSMIC desktop stack without `pop-server`/`dracut`, `pop-installer`, or Calamares. Live ISOs use `/usr/local/bin/install-system` with GRUB (512 MB ESP) instead of `systemd-boot` or Calamares. On non-COSMIC `noble`/`resolute` builds, you can also install COSMIC afterward with `sudo apt update && sudo apt install cosmic-session greetd`.
 
 ---
 

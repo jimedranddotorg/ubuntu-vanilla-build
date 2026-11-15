@@ -177,7 +177,7 @@ REPLY=""
 # -----------------------------------------------------------------------------
 # Output & branding helpers
 # -----------------------------------------------------------------------------
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != "dumb" ]; then
     C_RESET=$'\033[0m'
     C_BOLD=$'\033[1m'
     C_DIM=$'\033[2m'
@@ -193,6 +193,56 @@ else
     C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""
     C_GREEN=""; C_YELLOW=""; C_ACCENT=""
 fi
+
+SYM_INFO="i"
+SYM_OK="+"
+SYM_WARN="!"
+SYM_ERR="x"
+SYM_PTR=">"
+RULE_CHAR="-"
+BANNER_CHAR="="
+if [ "${TERM:-}" != "dumb" ] && [[ "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" =~ [Uu][Tt][Ff]-?8 ]]; then
+    SYM_INFO="•"
+    SYM_OK="✓"
+    SYM_WARN="!"
+    SYM_ERR="✗"
+    SYM_PTR="›"
+    RULE_CHAR="─"
+    BANNER_CHAR="═"
+fi
+
+term_cols() {
+    local cols="${COLUMNS:-}"
+    if [[ ! "$cols" =~ ^[0-9]+$ ]] && command -v tput >/dev/null 2>&1 && [ -t 1 ]; then
+        cols="$(tput cols 2>/dev/null || true)"
+    fi
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+    echo "$cols"
+}
+
+term_lines() {
+    local lines="${LINES:-}"
+    if [[ ! "$lines" =~ ^[0-9]+$ ]] && command -v tput >/dev/null 2>&1 && [ -t 1 ]; then
+        lines="$(tput lines 2>/dev/null || true)"
+    fi
+    [[ "$lines" =~ ^[0-9]+$ ]] || lines=24
+    echo "$lines"
+}
+
+rule_width() {
+    local w=$(( $(term_cols) - 2 ))
+    (( w > 72 )) && w=72
+    (( w < 44 )) && w=44
+    echo "$w"
+}
+
+repeat_char() {
+    local ch="$1" count="$2" out="" i
+    for (( i=0; i<count; i++ )); do
+        out+="$ch"
+    done
+    printf '%s\n' "$out"
+}
 
 detect_live_distro() {
     if [ -r /etc/os-release ] && grep -qs '^ID=pop$' /etc/os-release; then
@@ -215,9 +265,9 @@ apply_installer_theme() {
     fi
 
     if [ "$DISTRO_ID" = "pop" ]; then
-        export NEWT_COLORS="root=,black:border=brown,lightgray:window=,lightgray:shadow=,black:title=brown,lightgray:button=white,gray:actbutton=black,brown:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=black,brown:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=black,brown:sellistbox=brown,lightgray:actsellistbox=black,brown:textbox=black,lightgray:acttextbox=black,brown:emptyscale=,gray:fullscale=,brown:helpline=yellow,black:roottext=yellow,black"
+        export NEWT_COLORS="root=,black:border=black,lightgray:window=,lightgray:shadow=,black:title=black,lightgray:button=white,gray:actbutton=black,cyan:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=black,cyan:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=black,cyan:sellistbox=blue,lightgray:actsellistbox=black,cyan:textbox=black,lightgray:acttextbox=black,cyan:emptyscale=,gray:fullscale=,cyan:helpline=lightgray,black:roottext=cyan,black"
     else
-        export NEWT_COLORS="root=,magenta:border=brightred,lightgray:window=,lightgray:shadow=,black:title=brightred,lightgray:button=white,gray:actbutton=white,brightred:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=white,brightred:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=white,brightred:sellistbox=brightred,lightgray:actsellistbox=white,brightred:textbox=black,lightgray:acttextbox=white,brightred:emptyscale=,gray:fullscale=,brightred:helpline=white,magenta:roottext=brightred,magenta"
+        export NEWT_COLORS="root=,black:border=black,lightgray:window=,lightgray:shadow=,black:title=red,lightgray:button=white,gray:actbutton=white,red:compactbutton=black,lightgray:checkbox=black,lightgray:actcheckbox=white,red:entry=black,lightgray:disentry=gray,lightgray:label=black,lightgray:listbox=black,lightgray:actlistbox=white,red:sellistbox=red,lightgray:actsellistbox=white,red:textbox=black,lightgray:acttextbox=white,red:emptyscale=,gray:fullscale=,red:helpline=lightgray,black:roottext=brightred,black"
     fi
 
     if ! have_whiptail && have_dialog; then
@@ -229,34 +279,34 @@ apply_installer_theme() {
                 cat > "$DIALOGRC_FILE" <<'EOF'
 use_shadow = ON
 use_colors = ON
-screen_color = (YELLOW,BLACK,ON)
+screen_color = (CYAN,BLACK,ON)
 dialog_color = (BLACK,WHITE,OFF)
-title_color = (YELLOW,WHITE,ON)
-border_color = (YELLOW,WHITE,ON)
-button_active_color = (BLACK,YELLOW,ON)
+title_color = (BLACK,WHITE,ON)
+border_color = (BLACK,WHITE,OFF)
+button_active_color = (BLACK,CYAN,ON)
 button_inactive_color = (WHITE,BLACK,OFF)
-button_key_active_color = (BLACK,YELLOW,ON)
-button_key_inactive_color = (YELLOW,BLACK,ON)
-button_label_active_color = (BLACK,YELLOW,ON)
+button_key_active_color = (BLACK,CYAN,ON)
+button_key_inactive_color = (CYAN,BLACK,ON)
+button_label_active_color = (BLACK,CYAN,ON)
 button_label_inactive_color = (WHITE,BLACK,OFF)
 inputbox_color = (BLACK,WHITE,OFF)
-inputbox_border_color = (YELLOW,WHITE,ON)
+inputbox_border_color = (BLACK,WHITE,OFF)
 menubox_color = (BLACK,WHITE,OFF)
-menubox_border_color = (YELLOW,WHITE,ON)
+menubox_border_color = (BLACK,WHITE,OFF)
 item_color = (BLACK,WHITE,OFF)
-item_selected_color = (BLACK,YELLOW,ON)
-tag_color = (YELLOW,WHITE,ON)
-tag_selected_color = (BLACK,YELLOW,ON)
-gauge_color = (BLACK,YELLOW,ON)
+item_selected_color = (BLACK,CYAN,ON)
+tag_color = (CYAN,WHITE,ON)
+tag_selected_color = (BLACK,CYAN,ON)
+gauge_color = (BLACK,CYAN,ON)
 EOF
             else
                 cat > "$DIALOGRC_FILE" <<'EOF'
 use_shadow = ON
 use_colors = ON
-screen_color = (RED,MAGENTA,ON)
+screen_color = (RED,BLACK,ON)
 dialog_color = (BLACK,WHITE,OFF)
 title_color = (RED,WHITE,ON)
-border_color = (RED,WHITE,ON)
+border_color = (BLACK,WHITE,OFF)
 button_active_color = (WHITE,RED,ON)
 button_inactive_color = (WHITE,BLACK,OFF)
 button_key_active_color = (WHITE,RED,ON)
@@ -264,9 +314,9 @@ button_key_inactive_color = (RED,BLACK,ON)
 button_label_active_color = (WHITE,RED,ON)
 button_label_inactive_color = (WHITE,BLACK,OFF)
 inputbox_color = (BLACK,WHITE,OFF)
-inputbox_border_color = (RED,WHITE,ON)
+inputbox_border_color = (BLACK,WHITE,OFF)
 menubox_color = (BLACK,WHITE,OFF)
-menubox_border_color = (RED,WHITE,ON)
+menubox_border_color = (BLACK,WHITE,OFF)
 item_color = (BLACK,WHITE,OFF)
 item_selected_color = (WHITE,RED,ON)
 tag_color = (RED,WHITE,ON)
@@ -287,16 +337,41 @@ current_backtitle() {
     fi
 }
 
-info()  { printf '%s[i]%s %s\n' "$C_ACCENT" "$C_RESET" "$*"; }
-ok()    { printf '%s[+]%s %s\n' "$C_GREEN$C_BOLD" "$C_RESET$C_BOLD" "$*$C_RESET"; }
-warn()  { printf '%s[!]%s %s\n' "$C_YELLOW$C_BOLD" "$C_RESET" "$*$C_BOLD" >&2; }
-err()   { printf '%s[x]%s %s\n' "$C_RED$C_BOLD" "$C_RESET" "$*$C_BOLD" >&2; }
-step()  { printf '\n%s── %s ──%s\n' "$C_ACCENT" "$*" "$C_RESET"; }
-hr()    { printf '%s%s%s\n' "$C_DIM" "$(printf '─%.0s' {1..70})" "$C_RESET"; }
+info()  { printf '  %s%s%s  %s\n' "$C_ACCENT" "$SYM_INFO" "$C_RESET" "$*"; }
+ok()    { printf '  %s%s%s  %s%s%s\n' "$C_GREEN$C_BOLD" "$SYM_OK" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
+warn()  { printf '  %s%s%s  %s%s%s\n' "$C_YELLOW$C_BOLD" "$SYM_WARN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
+err()   { printf '  %s%s%s  %s%s%s\n' "$C_RED$C_BOLD" "$SYM_ERR" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" >&2; }
+hr()    { printf '%s%s%s\n' "$C_DIM" "$(repeat_char "$RULE_CHAR" "$(rule_width)")" "$C_RESET"; }
+step()  {
+    printf '\n%s%s%s %s%s%s\n' "$C_ACCENT" "${RULE_CHAR}${RULE_CHAR}" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+}
 banner() {
-    printf '%s%s\n' "$C_ACCENT" "================================================================"
-    printf '  %s\n' "$*"
-    printf '%s%s\n' "================================================================" "$C_RESET"
+    local w
+    w="$(rule_width)"
+    printf '\n%s' "$C_ACCENT"
+    repeat_char "$BANNER_CHAR" "$w"
+    printf '%s%s  %s%s\n' "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+    printf '%s' "$C_ACCENT"
+    repeat_char "$BANNER_CHAR" "$w"
+    printf '%s\n' "$C_RESET"
+}
+
+step_begin() {
+    local num="$1" total="$2" title="$3" subtitle="${4:-}"
+    STEP_LABEL="Step ${num} of ${total}: ${title}"
+    if [ "$UI_MODE" != "tui" ]; then
+        printf '\n%s[%d/%d]%s %s%s%s\n' "$C_ACCENT" "$num" "$total" "$C_RESET" "$C_BOLD" "$title" "$C_RESET"
+        hr
+        if [ -n "$subtitle" ]; then
+            info "$subtitle"
+        fi
+    fi
+}
+
+step_done() {
+    if [ "$UI_MODE" != "tui" ]; then
+        ok "$*"
+    fi
 }
 
 close_gauge() {
@@ -324,10 +399,12 @@ die() {
             log_tail="$(tail -n 12 "$INSTALL_LOG" 2>/dev/null || true)"
             err_msg="${err_msg}\n\nLast log lines (${INSTALL_LOG}):\n${log_tail}"
         fi
+        local err_h err_w
+        read -r err_h err_w < <(tui_box_dims "$(tui_text_height "$err_msg" 14)" 76)
         if have_whiptail; then
-            whiptail --backtitle "$(current_backtitle)" --title "Installation Error" --msgbox "$err_msg" 20 74 || true
+            whiptail --backtitle "$(current_backtitle)" --title "Installation Error" --msgbox "$err_msg" "$err_h" "$err_w" || true
         else
-            dialog --backtitle "$(current_backtitle)" --title "Installation Error" --msgbox "$err_msg" 20 74 || true
+            dialog --backtitle "$(current_backtitle)" --title "Installation Error" --msgbox "$err_msg" "$err_h" "$err_w" || true
         fi
     fi
     err "$*"
@@ -376,13 +453,12 @@ text_input() {
     # text_input <prompt> [<default>]
     local prompt="$1" default="${2:-}" value=""
     if [ -n "$default" ]; then
-        printf '%s%s%s [%s]: ' "$C_BOLD" "$prompt" "$C_RESET" "$default"
+        printf '  %s%s%s [%s]: ' "$C_BOLD" "$prompt" "$C_RESET" "$default"
     else
-        printf '%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
+        printf '  %s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
     fi
     IFS= read -r value || die "Cancelled by user."
     if [ -z "$value" ] && [ -n "$default" ]; then
-        printf '%s\n' "$default"
         REPLY="$default"
     else
         REPLY="$value"
@@ -392,7 +468,7 @@ text_input() {
 text_password() {
     # text_password <prompt> — sets REPLY
     local prompt="$1" value=""
-    printf '%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
+    printf '  %s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET"
     IFS= read -rs value || die "Cancelled by user."
     printf '\n'
     REPLY="$value"
@@ -405,13 +481,13 @@ text_yesno() {
     elif [ "$default" = "n" ]; then suffix=" [y/N]"
     else suffix=" [y/n]"; fi
     while :; do
-        printf '%s%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET" "$suffix"
+        printf '  %s%s%s%s: ' "$C_BOLD" "$prompt" "$C_RESET" "$suffix"
         IFS= read -r ans || die "Cancelled by user."
         ans="${ans:-$default}"
         case "$ans" in
             y|Y|yes|YES) REPLY="y"; return 0 ;;
             n|N|no|NO)   REPLY="n"; return 0 ;;
-            *) warn "Please answer y or n." ;;
+            *) warn "Please answer 'y' or 'n'." ;;
         esac
     done
 }
@@ -420,27 +496,55 @@ text_choice() {
     # text_choice <prompt> <default_index(1-based)> <choice>... — sets REPLY
     local prompt="$1" default="$2"; shift 2
     local i=1 choice
-    hr
-    printf '%s%s%s\n' "$C_BOLD" "$prompt" "$C_RESET"
+    printf '\n  %s%s%s\n' "$C_BOLD" "$prompt" "$C_RESET"
     for choice in "$@"; do
         if [ "$i" -eq "$default" ]; then
-            printf '  %s>%s %d) %s\n' "$C_GREEN$C_BOLD" "$C_RESET" "$i" "$choice"
+            printf '  %s%s%s %2d) %s %s[default]%s\n' "$C_GREEN$C_BOLD" "$SYM_PTR" "$C_RESET" "$i" "$choice" "$C_GREEN" "$C_RESET"
         else
-            printf '    %d) %s\n' "$i" "$choice"
+            printf '    %2d) %s\n' "$i" "$choice"
         fi
         i=$((i+1))
     done
-    hr
     local ans
     while :; do
-        printf 'Select [1-%d] (default %d): ' "$(($#))" "$default"
+        printf '  Select [1-%d, Enter=%d]: ' "$(($#))" "$default"
         IFS= read -r ans || die "Cancelled by user."
         ans="${ans:-$default}"
         if [[ "$ans" =~ ^[0-9]+$ ]] && [ "$ans" -ge 1 ] && [ "$ans" -le $# ]; then
             REPLY="${!ans}"
             return 0
         fi
-        warn "Invalid choice: $ans"
+        warn "Invalid choice '$ans' — enter 1-$#."
+    done
+}
+
+print_columns() {
+    # print_columns <default_idx_1based> <col_width> <label1> [<label2>...]
+    local def_idx="$1" col_w="$2"
+    shift 2
+    local -a items=("$@")
+    local count="${#items[@]}"
+    local tcols ncols rows r c idx text
+    tcols="$(term_cols)"
+    ncols=$(( (tcols - 2) / col_w ))
+    (( ncols < 1 )) && ncols=1
+    (( ncols > 3 )) && ncols=3
+    rows=$(( (count + ncols - 1) / ncols ))
+
+    for (( r=0; r<rows; r++ )); do
+        printf '  '
+        for (( c=0; c<ncols; c++ )); do
+            idx=$(( c * rows + r ))
+            if (( idx < count )); then
+                text="${items[$idx]}"
+                if (( idx + 1 == def_idx )); then
+                    printf '%s%s %3d) %-*s%s' "$C_GREEN$C_BOLD" "$SYM_PTR" "$((idx + 1))" "$((col_w - 8))" "$text" "$C_RESET"
+                else
+                    printf '  %3d) %-*s' "$((idx + 1))" "$((col_w - 8))" "$text"
+                fi
+            fi
+        done
+        printf '\n'
     done
 }
 
@@ -480,13 +584,41 @@ target_bootloader_id() {
 have_whiptail() { command -v whiptail >/dev/null 2>&1; }
 have_dialog()  { command -v dialog  >/dev/null 2>&1; }
 
+tui_box_dims() {
+    local desired_h="$1" desired_w="$2"
+    local rows cols max_h max_w h w
+    rows="$(term_lines)"
+    cols="$(term_cols)"
+    max_h=$(( rows - 4 ))
+    max_w=$(( cols - 4 ))
+    (( max_h < 10 )) && max_h=10
+    (( max_w < 48 )) && max_w=48
+    h="$desired_h"
+    w="$desired_w"
+    (( h > max_h )) && h="$max_h"
+    (( w > max_w )) && w="$max_w"
+    printf '%d %d\n' "$h" "$w"
+}
+
+tui_text_height() {
+    local msg="$1" min_h="${2:-10}"
+    local expanded lines h
+    expanded="$(printf '%b' "$msg")"
+    lines="$(printf '%s\n' "$expanded" | wc -l)"
+    h=$(( lines + 7 ))
+    (( h < min_h )) && h="$min_h"
+    printf '%d\n' "$h"
+}
+
 tui_msg() {
     # tui_msg <title> <message>
-    local title="$1" msg="$2" rc=0
+    local title="$1" msg="$2" rc=0 h w desired_h
+    desired_h="$(tui_text_height "$msg" 12)"
+    read -r h w < <(tui_box_dims "$desired_h" 76)
     if have_whiptail; then
-        whiptail --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 18 74 || rc=$?
+        whiptail --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" "$h" "$w" || rc=$?
     else
-        dialog --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 18 74 || rc=$?
+        dialog --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" "$h" "$w" || rc=$?
     fi
     [ "$rc" -eq 0 ] || die "Cancelled by user."
 }
@@ -494,15 +626,17 @@ tui_msg() {
 tui_yesno() {
     # tui_yesno <title> <text> [<default y|n|0|1>] — sets REPLY to y or n
     local title="$1" text="$2" default="${3:-y}"
-    local rc=0
+    local rc=0 h w desired_h
     local -a extra=()
     if [ "$default" = "n" ] || [ "$default" = "1" ]; then
         extra+=(--defaultno)
     fi
+    desired_h="$(tui_text_height "$text" 10)"
+    read -r h w < <(tui_box_dims "$desired_h" 76)
     if have_whiptail; then
-        whiptail --backtitle "$(current_backtitle)" --title "$title" "${extra[@]}" --yesno "$text" 12 74 || rc=$?
+        whiptail --backtitle "$(current_backtitle)" --title "$title" "${extra[@]}" --yesno "$text" "$h" "$w" || rc=$?
     else
-        dialog --backtitle "$(current_backtitle)" --title "$title" "${extra[@]}" --yesno "$text" 12 74 || rc=$?
+        dialog --backtitle "$(current_backtitle)" --title "$title" "${extra[@]}" --yesno "$text" "$h" "$w" || rc=$?
     fi
     if [ "$rc" -eq 255 ]; then
         die "Cancelled by user."
@@ -515,11 +649,13 @@ tui_yesno() {
 
 tui_input() {
     # tui_input <title> <text> <default> — sets REPLY
-    local title="$1" text="$2" default="${3:-}" rc=0
+    local title="$1" text="$2" default="${3:-}" rc=0 h w desired_h
+    desired_h="$(tui_text_height "$text" 10)"
+    read -r h w < <(tui_box_dims "$desired_h" 74)
     if have_whiptail; then
-        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" --inputbox "$text" 11 74 "$default" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" --inputbox "$text" "$h" "$w" "$default" 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" --inputbox "$text" 11 74 "$default" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" --inputbox "$text" "$h" "$w" "$default" 3>&1 1>&2 2>&3)" || rc=$?
     fi
     [ "$rc" -eq 0 ] || die "Cancelled by user."
     if [ -z "$REPLY" ]; then
@@ -529,11 +665,13 @@ tui_input() {
 
 tui_password() {
     # tui_password <title> <text> — sets REPLY
-    local title="$1" text="$2" rc=0
+    local title="$1" text="$2" rc=0 h w desired_h
+    desired_h="$(tui_text_height "$text" 10)"
+    read -r h w < <(tui_box_dims "$desired_h" 74)
     if have_whiptail; then
-        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" --passwordbox "$text" 11 74 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" --passwordbox "$text" "$h" "$w" 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" --passwordbox "$text" 11 74 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" --passwordbox "$text" "$h" "$w" 3>&1 1>&2 2>&3)" || rc=$?
     fi
     [ "$rc" -eq 0 ] || die "Cancelled by user."
 }
@@ -541,25 +679,33 @@ tui_password() {
 tui_menu() {
     # tui_menu <title> <text> <default_tag> <choice_tag> <choice_text>...
     local title="$1" text="$2" default="$3"; shift 3
-    local rc=0
+    local rc=0 count max_h w max_list list_h h
+    count=$(( $# / 2 ))
+    read -r max_h w < <(tui_box_dims 22 76)
+    max_list=$(( max_h - 8 ))
+    (( max_list < 4 )) && max_list=4
+    list_h=$(( count > max_list ? max_list : count ))
+    h=$(( list_h + 8 ))
+    (( h > max_h )) && h="$max_h"
     local -a cmd_prefix=()
     [ -n "$default" ] && cmd_prefix=(--default-item "$default")
     if have_whiptail; then
-        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" "${cmd_prefix[@]}" --menu "$text" 21 76 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(whiptail --backtitle "$(current_backtitle)" --title "$title" "${cmd_prefix[@]}" --menu "$text" "$h" "$w" "$list_h" "$@" 3>&1 1>&2 2>&3)" || rc=$?
     else
-        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" "${cmd_prefix[@]}" --menu "$text" 21 76 12 "$@" 3>&1 1>&2 2>&3)" || rc=$?
+        REPLY="$(dialog --backtitle "$(current_backtitle)" --title "$title" "${cmd_prefix[@]}" --menu "$text" "$h" "$w" "$list_h" "$@" 3>&1 1>&2 2>&3)" || rc=$?
     fi
     [ "$rc" -eq 0 ] || die "Cancelled by user."
 }
 
 open_gauge() {
-    local title="$1" init_msg="$2"
+    local title="$1" init_msg="$2" h w
+    read -r h w < <(tui_box_dims 9 74)
     GAUGE_FIFO="$(mktemp -u "${TMPDIR:-/tmp}/install-system-gauge.XXXXXX")"
     mkfifo "$GAUGE_FIFO"
     if have_whiptail; then
-        whiptail --backtitle "$(current_backtitle)" --title "$title" --gauge "$init_msg" 10 74 0 < "$GAUGE_FIFO" &
+        whiptail --backtitle "$(current_backtitle)" --title "$title" --gauge "$init_msg" "$h" "$w" 0 < "$GAUGE_FIFO" &
     else
-        dialog --backtitle "$(current_backtitle)" --title "$title" --gauge "$init_msg" 10 74 0 < "$GAUGE_FIFO" &
+        dialog --backtitle "$(current_backtitle)" --title "$title" --gauge "$init_msg" "$h" "$w" 0 < "$GAUGE_FIFO" &
     fi
     GAUGE_PID=$!
     exec 3> "$GAUGE_FIFO"
@@ -593,11 +739,12 @@ ui_msg() {
 }
 ui_warn() {
     if [ "$UI_MODE" = "tui" ]; then
-        local title="$1" msg="$2"
+        local title="$1" msg="$2" h w
+        read -r h w < <(tui_box_dims "$(tui_text_height "$msg" 10)" 74)
         if have_whiptail; then
-            whiptail --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 12 74 || true
+            whiptail --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" "$h" "$w" || true
         else
-            dialog --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" 12 74 || true
+            dialog --backtitle "$(current_backtitle)" --title "$title" --msgbox "$msg" "$h" "$w" || true
         fi
     else
         shift
@@ -630,13 +777,14 @@ is_live_session() {
 }
 
 check_live_env() {
+    detect_live_distro
     if ! is_live_session; then
         die "This system appears to be an installed system, not a live ISO session.
 The installer only runs from the live ISO environment."
     fi
     if [ ! -f "$LIVE_SQUASHFS" ]; then
         die "Live squashfs not found at $LIVE_SQUASHFS.
-This installer must be run from the Ubuntu Vanilla Build live ISO.
+This installer must be run from a ${DISTRO_NAME} live ISO.
 If you booted a minimal/server ISO, use debootstrap instead."
     fi
     if ! [ -d "$LIVE_CDROM" ]; then
@@ -651,15 +799,15 @@ step_welcome() {
     apply_installer_theme
     STEP_LABEL="Step 1 of 7: Welcome"
     banner "Welcome to the ${DISTRO_NAME} Installer"
-    info "This Ubiquity-style wizard installs ${DISTRO_NAME} onto your disk"
-    info "and configures language, keyboard, timezone, partitions, user, and GRUB."
-    info "Supports both fixed disk layout and manual partitioning (/, /boot/efi, swap)."
+    info "This installer copies ${DISTRO_NAME} onto your disk and configures"
+    info "language, keyboard, timezone, partitions, user account, and GRUB."
+    info "Supports fixed GPT partitioning or manual partition assignment."
     hr
 
     if have_whiptail || have_dialog; then
         text_choice "Choose the installer interface:" 1 \
-            "TUI Wizard (Ubiquity-style boxes — recommended)" \
-            "Plain text prompts"
+            "TUI Wizard (interactive boxes — recommended)" \
+            "Plain text prompts (line-by-line CLI)"
         case "$REPLY" in
             *TUI*|*Wizard*) UI_MODE="tui" ;;
             *)              UI_MODE="text" ;;
@@ -670,9 +818,10 @@ step_welcome() {
     fi
 
     if [ "$UI_MODE" = "tui" ]; then
-        ui_msg "Welcome to ${DISTRO_NAME}" "Welcome! Ready to install ${DISTRO_NAME}?\n\nThis wizard will walk you through:\n  1. Language & Locale\n  2. Keyboard Layout\n  3. Timezone (Where are you?)\n  4. Installation Type & Partitions (Fixed or Manual)\n  5. Who are you? (Account & Computer Name)\n  6. Ready to Install Summary\n  7. Automated Installation & Completion\n\nNothing is written to your disk until you confirm at the end.\n\nSelect OK to begin."
+        tput clear 2>/dev/null || printf '\033[2J\033[H'
+        ui_msg "Welcome to ${DISTRO_NAME}" "Ready to install ${DISTRO_NAME}?\n\nThis wizard will walk you through:\n  1. Language & Locale\n  2. Keyboard Layout\n  3. Timezone\n  4. Disk & Partitions (Fixed or Manual)\n  5. User Account & Hostname\n  6. Ready to Install Summary\n  7. Automated Installation\n\nNothing is written to disk until you confirm at the summary step."
     else
-        ui_yesno "Start the ${DISTRO_NAME} installation wizard now?" "y"
+        ui_yesno "Welcome" "Start the ${DISTRO_NAME} installation wizard now?" "y"
         [ "$REPLY" = "y" ] || die "Aborted by user at welcome screen."
     fi
 }
@@ -680,79 +829,172 @@ step_welcome() {
 # -----------------------------------------------------------------------------
 # STEP: locale
 # -----------------------------------------------------------------------------
+describe_locale_code() {
+    local code="${1%%.*}"
+    case "$code" in
+        en_US) echo "English (United States)" ;;
+        en_GB) echo "English (United Kingdom)" ;;
+        en_AU) echo "English (Australia)" ;;
+        en_CA) echo "English (Canada)" ;;
+        en_IE) echo "English (Ireland)" ;;
+        en_NZ) echo "English (New Zealand)" ;;
+        en_ZA) echo "English (South Africa)" ;;
+        id_ID) echo "Indonesian (Indonesia)" ;;
+        ms_MY) echo "Malay (Malaysia)" ;;
+        de_DE) echo "German (Germany)" ;;
+        de_AT) echo "German (Austria)" ;;
+        de_CH) echo "German (Switzerland)" ;;
+        fr_FR) echo "French (France)" ;;
+        fr_CA) echo "French (Canada)" ;;
+        fr_BE) echo "French (Belgium)" ;;
+        fr_CH) echo "French (Switzerland)" ;;
+        es_ES) echo "Spanish (Spain)" ;;
+        es_MX) echo "Spanish (Mexico)" ;;
+        es_AR) echo "Spanish (Argentina)" ;;
+        es_CL) echo "Spanish (Chile)" ;;
+        pt_BR) echo "Portuguese (Brazil)" ;;
+        pt_PT) echo "Portuguese (Portugal)" ;;
+        it_IT) echo "Italian (Italy)" ;;
+        it_CH) echo "Italian (Switzerland)" ;;
+        nl_NL) echo "Dutch (Netherlands)" ;;
+        nl_BE) echo "Dutch (Belgium)" ;;
+        ja_JP) echo "Japanese (Japan)" ;;
+        ko_KR) echo "Korean (South Korea)" ;;
+        zh_CN) echo "Chinese (Simplified, China)" ;;
+        zh_TW) echo "Chinese (Traditional, Taiwan)" ;;
+        zh_HK) echo "Chinese (Hong Kong)" ;;
+        zh_SG) echo "Chinese (Singapore)" ;;
+        ru_RU) echo "Russian (Russia)" ;;
+        uk_UA) echo "Ukrainian (Ukraine)" ;;
+        pl_PL) echo "Polish (Poland)" ;;
+        tr_TR) echo "Turkish (Turkey)" ;;
+        ar_EG) echo "Arabic (Egypt)" ;;
+        vi_VN) echo "Vietnamese (Vietnam)" ;;
+        th_TH) echo "Thai (Thailand)" ;;
+        hi_IN) echo "Hindi (India)" ;;
+        sv_SE) echo "Swedish (Sweden)" ;;
+        nb_NO) echo "Norwegian Bokmal (Norway)" ;;
+        da_DK) echo "Danish (Denmark)" ;;
+        fi_FI) echo "Finnish (Finland)" ;;
+        cs_CZ) echo "Czech (Czechia)" ;;
+        ro_RO) echo "Romanian (Romania)" ;;
+        hu_HU) echo "Hungarian (Hungary)" ;;
+        el_GR) echo "Greek (Greece)" ;;
+        he_IL) echo "Hebrew (Israel)" ;;
+        tl_PH) echo "Tagalog (Philippines)" ;;
+        eo)    echo "Esperanto (UTF-8)" ;;
+        *)
+            if [[ "$code" == *_* ]]; then
+                printf '%s (%s, UTF-8)' "${code%_*}" "${code#*_}"
+            else
+                printf '%s (UTF-8)' "$code"
+            fi
+            ;;
+    esac
+}
+
 read_i18n_entries() {
     # Echo "<locale>\t<pretty>" lines from the embedded SUPPORTED_LOCALES.
-    # The list is baked into the top of this script so it works from any
-    # install path without depending on the project tree being on disk.
-    # Each line in SUPPORTED_LOCALES is "<locale> UTF-8"; we keep UTF-8 only.
-    awk 'NF>=2 && $2 ~ /UTF-8/ { printf "%s\t%s\n", $1, $1 }' <<<"$SUPPORTED_LOCALES"
+    local tag
+    while read -r tag _; do
+        [ -n "$tag" ] || continue
+        printf '%s\t%s\n' "$tag" "$(describe_locale_code "$tag")"
+    done < <(awk 'NF>=2 && $2 ~ /UTF-8/ { print $1, $2 }' <<<"$SUPPORTED_LOCALES")
 }
 
 step_locale() {
-    STEP_LABEL="Step 2 of 7: Language & Locale"
-    step "Language & Locale"
-    hr
-    info "Choose your locale. Default if you press Enter: en_US.UTF-8"
-    info "Tip: enter the language code (e.g. 'de_DE' or 'fr_FR') to filter."
+    step_begin 2 7 "Language & Locale" "Default is en_US.UTF-8. Type a number, code/filter, or press Enter."
 
     local map_file
     map_file="$(mktemp)"
     read_i18n_entries > "$map_file"
 
-    # Default choice is en_US.UTF-8
     local default_locale="en_US.UTF-8"
 
     if [ "$UI_MODE" = "tui" ]; then
-        # Build a whiptail menu of all locales (up to ~120 entries is fine for
-        # the curated list; the upstream SUPPORTED is filtered to UTF-8 only).
-        local args=()
-        while IFS=$'\t' read -r tag pretty; do
-            [ -z "$tag" ] && continue
-            args+=("$tag" "$pretty")
-        done < "$map_file"
-        # whiptail menu caps at ~250 items — our curated list is ~95.
-        tui_menu "Locale" "Pick your locale (default: en_US.UTF-8)" "$default_locale" "${args[@]}"
-        LANG_CHOICE="$REPLY"
-    else
-        local filter="" filtered
+        local filter="" filtered=""
         while :; do
-            text_input "Filter (Enter for full list, or en_US, de_DE, fr_FR, etc.)" ""
-            filter="$REPLY"
             if [ -z "$filter" ]; then
                 filtered="$(cat "$map_file")"
             else
                 filtered="$(grep -Fi -- "$filter" "$map_file" || true)"
             fi
             if [ -z "$filtered" ]; then
-                warn "No locales matched '$filter' — try again."
-                continue
+                ui_warn "No Match" "No locales matched '${filter}'. Showing all locales."
+                filter=""
+                filtered="$(cat "$map_file")"
             fi
-            local lines=() line tag pretty
-            while IFS= read -r line; do
-                tag="${line%%	*}"
-                [ -z "$tag" ] && continue
-                lines+=("$tag")
-            done <<< "$filtered"
-            [ "${#lines[@]}" -gt 0 ] || continue
-            # Show a numbered list and ask the user to pick by index.
-            info "Matching locales:"
-            local i=1 def_idx=1
+            local args=() def_item="$default_locale" first_tag=""
+            if [ -n "$filter" ]; then
+                args+=("__all__" "Show all locales (clear filter: ${filter})")
+            else
+                args+=("__filter__" "Search / filter locales by code or language")
+            fi
+            local tag pretty
             while IFS=$'\t' read -r tag pretty; do
                 [ -z "$tag" ] && continue
-                if [ "$tag" = "$default_locale" ]; then
-                    def_idx="$i"
-                    printf '  %3d) %s (default)\n' "$i" "$tag"
-                else
-                    printf '  %3d) %s\n' "$i" "$tag"
-                fi
-                i=$((i+1))
+                [ -z "$first_tag" ] && first_tag="$tag"
+                args+=("$tag" "$pretty")
             done <<< "$filtered"
-            text_input "Choose a locale by number" "$def_idx"
-            if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
-                LANG_CHOICE="${lines[$((REPLY-1))]}"
+            if ! printf '%s\n' "$filtered" | grep -q "^${default_locale}	"; then
+                def_item="$first_tag"
+            fi
+            tui_menu "Language & Locale" "Select your system language and locale:" "$def_item" "${args[@]}"
+            if [ "$REPLY" = "__filter__" ]; then
+                tui_input "Filter Locales" "Enter language or country code (e.g. en_US, id_ID, German):" ""
+                filter="$REPLY"
+                continue
+            elif [ "$REPLY" = "__all__" ]; then
+                filter=""
+                continue
+            else
+                LANG_CHOICE="$REPLY"
                 break
             fi
-            warn "Invalid selection."
+        done
+    else
+        local filter="" filtered=""
+        while :; do
+            if [ -z "$filter" ]; then
+                filtered="$(cat "$map_file")"
+            else
+                filtered="$(grep -Fi -- "$filter" "$map_file" || true)"
+            fi
+            if [ -z "$filtered" ]; then
+                warn "No locales matched '$filter' — showing all."
+                filter=""
+                continue
+            fi
+
+            local lines=() cols_labels=() tag pretty def_idx=1 idx=1
+            while IFS=$'\t' read -r tag pretty; do
+                [ -z "$tag" ] && continue
+                lines+=("$tag")
+                cols_labels+=("$tag")
+                [ "$tag" = "$default_locale" ] && def_idx="$idx"
+                idx=$((idx + 1))
+            done <<< "$filtered"
+
+            printf '\n'
+            print_columns "$def_idx" 22 "${cols_labels[@]}"
+            printf '\n'
+            if [ -n "$filter" ]; then
+                text_input "Choose number, new filter, 'all' to reset, or locale" "$def_idx"
+            else
+                text_input "Choose number, locale name, or type text to filter" "$def_idx"
+            fi
+            if [ "$REPLY" = "all" ] && [ -n "$filter" ]; then
+                filter=""
+                continue
+            elif [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
+                LANG_CHOICE="${lines[$((REPLY-1))]}"
+                break
+            elif grep -qxF "${REPLY}" <(printf '%s\n' "${lines[@]}"); then
+                LANG_CHOICE="$REPLY"
+                break
+            else
+                filter="$REPLY"
+            fi
         done
     fi
     rm -f "$map_file"
@@ -760,7 +1002,7 @@ step_locale() {
     LOCALE="$LANG_CHOICE"
     COUNTRY="${LOCALE#*_}"
     COUNTRY="${COUNTRY%.*}"
-    ok "Locale: $LOCALE"
+    step_done "Locale: $LOCALE"
 }
 
 # -----------------------------------------------------------------------------
@@ -808,10 +1050,7 @@ EOF
 }
 
 step_keyboard() {
-    STEP_LABEL="Step 3 of 7: Keyboard Layout"
-    step "Keyboard Layout"
-    hr
-    info "Choose your keyboard layout. Default if you press Enter: us"
+    step_begin 3 7 "Keyboard Layout" "Default layout is 'us'."
 
     local default_layout="us" raw_kb=""
     if [ "$UI_MODE" = "tui" ]; then
@@ -820,22 +1059,25 @@ step_keyboard() {
             [ -z "$tag" ] && continue
             args+=("$tag" "$pretty")
         done < <(read_xkb_layouts)
-        tui_menu "Keyboard" "Pick a keyboard layout (default: us)" "$default_layout" "${args[@]}"
-        raw_kb="$REPLY"
+        args+=("__custom__" "Custom (enter any XKB layout or layout:variant)")
+        tui_menu "Keyboard Layout" "Select your keyboard layout:" "$default_layout" "${args[@]}"
+        if [ "$REPLY" = "__custom__" ]; then
+            tui_input "Custom Keyboard Layout" "Enter XKB layout code (optionally layout:variant, e.g. us:intl):" "$default_layout"
+            raw_kb="$REPLY"
+        else
+            raw_kb="$REPLY"
+        fi
     else
-        info "Common layouts:"
-        local lines=() tag pretty
+        local lines=() labels=() tag pretty
         while IFS=$'\t' read -r tag pretty; do
             [ -z "$tag" ] && continue
             lines+=("$tag")
+            labels+=("$(printf '%-5s %s' "$tag" "$pretty")")
         done < <(read_xkb_layouts)
-        local i=1
-        while IFS=$'\t' read -r tag pretty; do
-            [ -z "$tag" ] && continue
-            printf '  %3d) %-8s %s\n' "$i" "$tag" "$pretty"
-            i=$((i+1))
-        done < <(read_xkb_layouts)
-        text_input "Choose a layout by number, or type a custom XKB name" "1"
+        printf '\n'
+        print_columns 1 36 "${labels[@]}"
+        printf '\n'
+        text_input "Choose number or type XKB layout (e.g. us, ch:fr)" "1"
         if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
             raw_kb="${lines[$((REPLY-1))]}"
         else
@@ -849,14 +1091,14 @@ step_keyboard() {
         KEYBOARD_LAYOUT="$raw_kb"
         KEYBOARD_VARIANT=""
     fi
-    ok "Keyboard layout: $KEYBOARD_LAYOUT${KEYBOARD_VARIANT:+ (variant: $KEYBOARD_VARIANT)}"
+    step_done "Keyboard layout: $KEYBOARD_LAYOUT${KEYBOARD_VARIANT:+ (variant: $KEYBOARD_VARIANT)}"
 }
 
 # -----------------------------------------------------------------------------
 # STEP: timezone
 # -----------------------------------------------------------------------------
 read_timezones() {
-    # Curated short list with a "More..." trapdoor handled below.
+    # Curated short list with a "Custom" option handled below.
     cat <<'EOF'
 Africa/Cairo
 Africa/Johannesburg
@@ -914,31 +1156,46 @@ UTC
 EOF
 }
 
-step_timezone() {
-    STEP_LABEL="Step 4 of 7: Where are you? (Timezone)"
-    step "Where are you? (Timezone)"
-    hr
+describe_timezone() {
+    local tz="$1"
+    if [ "$tz" = "UTC" ]; then
+        echo "Coordinated Universal Time"
+    elif [[ "$tz" == */*/* ]]; then
+        local reg="${tz%%/*}" rest="${tz#*/}"
+        rest="${rest//\// - }"
+        echo "${reg} — ${rest//_/ }"
+    elif [[ "$tz" == */* ]]; then
+        local reg="${tz%%/*}" city="${tz#*/}"
+        echo "${reg} — ${city//_/ }"
+    else
+        echo "$tz"
+    fi
+}
 
-    # Try NTP sync first if connected.
+step_timezone() {
+    step_begin 4 7 "Timezone"
+
+    # Try NTP sync silently in TUI mode (to avoid stdout flicker), visibly in CLI mode.
     if [ "$USE_NTP" -eq 1 ] && command -v timedatectl >/dev/null 2>&1; then
-        info "Checking internet connectivity for NTP sync..."
-        if timeout 4 getent ahosts 2.pool.ntp.org >/dev/null 2>&1; then
-            info "Internet reachable — attempting NTP sync via systemd-timesyncd..."
+        [ "$UI_MODE" != "tui" ] && info "Checking network connectivity for NTP sync..."
+        if timeout 3 getent ahosts 2.pool.ntp.org >/dev/null 2>&1; then
             timedatectl set-ntp true >/dev/null 2>&1 || true
-            sleep 2
+            sleep 1
             local ntp_status=""
             ntp_status="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || true)"
-            if [ "$ntp_status" = "yes" ]; then
-                ok "System clock synchronised with NTP."
-            else
-                warn "NTP not yet synchronised — falling back to live session clock."
+            if [ "$UI_MODE" != "tui" ]; then
+                if [ "$ntp_status" = "yes" ]; then
+                    ok "System clock synchronized with NTP."
+                else
+                    info "Using live session clock (NTP pending)."
+                fi
             fi
-        else
-            warn "No internet — NTP sync skipped. Using live session clock."
+        elif [ "$UI_MODE" != "tui" ]; then
+            info "Offline — using live session clock."
         fi
     fi
 
-    local current_tz="" guess_default="America/New_York"  # mirrors calamares/locale.conf
+    local current_tz="" guess_default="America/New_York"
     if [ -f /etc/timezone ]; then
         current_tz="$(tr -d '[:space:]' < /etc/timezone 2>/dev/null || true)"
     fi
@@ -962,22 +1219,20 @@ step_timezone() {
         while IFS= read -r tz; do
             [ -z "$tz" ] && continue
             [ "$tz" = "$guess_default" ] && found_default=1
-            args+=("$tz" "$tz")
+            args+=("$tz" "$(describe_timezone "$tz")")
         done < <(read_timezones)
         if [ "$found_default" -eq 0 ]; then
-            args=("$guess_default" "$guess_default" "${args[@]}")
+            args=("$guess_default" "$(describe_timezone "$guess_default")" "${args[@]}")
         fi
-        # Add a "Custom..." option
         args+=("__custom__" "Custom (type any IANA timezone)")
-        tui_menu "Timezone" "Pick a timezone (default: $guess_default)" "$guess_default" "${args[@]}"
+        tui_menu "Timezone" "Select your timezone:" "$guess_default" "${args[@]}"
         if [ "$REPLY" = "__custom__" ]; then
-            tui_input "Custom timezone" "Enter an IANA timezone (e.g. Asia/Tokyo):" "$guess_default"
+            tui_input "Custom Timezone" "Enter an IANA timezone (e.g. Asia/Jakarta):" "$guess_default"
             TIMEZONE="$REPLY"
         else
             TIMEZONE="$REPLY"
         fi
     else
-        info "Common timezones:"
         local lines=() tz found_default=0 default_idx=1
         while IFS= read -r tz; do
             [ -z "$tz" ] && continue
@@ -989,36 +1244,37 @@ step_timezone() {
         fi
         local i=1
         for tz in "${lines[@]}"; do
-            if [ "$tz" = "$guess_default" ]; then
-                default_idx="$i"
-                printf '  %3d) %s (default)\n' "$i" "$tz"
-            else
-                printf '  %3d) %s\n' "$i" "$tz"
-            fi
-            i=$((i+1))
+            [ "$tz" = "$guess_default" ] && default_idx="$i"
+            i=$((i + 1))
         done
-        local custom_idx="$i"
-        printf '  %3d) %s\n' "$custom_idx" "Custom (type any IANA timezone)"
-        text_input "Choose a timezone by number" "$default_idx"
-        if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
-            TIMEZONE="${lines[$((REPLY-1))]}"
-        elif [ "$REPLY" = "$custom_idx" ]; then
-            text_input "Enter an IANA timezone" "$guess_default"
+        lines+=("__custom__")
+        printf '\n'
+        print_columns "$default_idx" 38 "${lines[@]/__custom__/Custom IANA timezone...}"
+        printf '\n'
+        local custom_idx="${#lines[@]}"
+        text_input "Choose number or type IANA timezone" "$default_idx"
+        if [ "$REPLY" = "$custom_idx" ]; then
+            text_input "Enter IANA timezone" "$guess_default"
             TIMEZONE="$REPLY"
+        elif [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -lt "$custom_idx" ]; then
+            TIMEZONE="${lines[$((REPLY-1))]}"
         elif [ -n "$REPLY" ] && [ -e "/usr/share/zoneinfo/$REPLY" ]; then
             TIMEZONE="$REPLY"
         else
-            text_input "Enter an IANA timezone" "$guess_default"
+            text_input "Enter IANA timezone" "$guess_default"
             TIMEZONE="$REPLY"
         fi
     fi
 
-    # Validate
     if [ -z "$TIMEZONE" ] || [ ! -e "/usr/share/zoneinfo/$TIMEZONE" ]; then
-        warn "Unknown timezone '$TIMEZONE' — falling back to UTC."
+        if [ "$UI_MODE" = "tui" ]; then
+            ui_warn "Unknown Timezone" "Unknown timezone '${TIMEZONE}' — falling back to UTC."
+        else
+            warn "Unknown timezone '$TIMEZONE' — falling back to UTC."
+        fi
         TIMEZONE="UTC"
     fi
-    ok "Timezone: $TIMEZONE"
+    step_done "Timezone: $TIMEZONE"
 }
 
 # -----------------------------------------------------------------------------
@@ -1039,22 +1295,19 @@ list_block_devices() {
 }
 
 step_disk() {
-    STEP_LABEL="Step 5 of 7: Installation Type & Partitions"
-    step "Installation Type & Partitions"
-    hr
-    info "Choose fixed default partitioning or manual partition assignment."
+    step_begin 5 7 "Installation Type & Disk" "Choose automatic fixed partitioning or manual partition assignment."
 
     if [ "$UI_MODE" = "tui" ]; then
-        tui_menu "Installation type" \
+        tui_menu "Installation Type" \
             "How would you like to prepare your disk for ${DISTRO_NAME}?" \
             "erase" \
-            "erase"  "Erase disk (fixed default: EFI + 4 GiB swap + selectable root /)" \
-            "manual" "Manual partitioning (choose /, /boot/efi, and optional swap)"
+            "erase"  "Erase disk (GPT: BIOS boot + 512 MiB EFI + 4 GiB swap + root)" \
+            "manual" "Manual partitioning (cfdisk + assign /, /boot/efi, swap)"
         DISK_MODE="$REPLY"
     else
         text_choice "Choose installation type:" 1 \
-            "Erase disk and install ${DISTRO_NAME} (fixed default GPT layout)" \
-            "Manual partitioning (cfdisk + choose /, /boot/efi, and optional swap)"
+            "Erase disk and install ${DISTRO_NAME} (fixed GPT layout)" \
+            "Manual partitioning (cfdisk + assign /, /boot/efi, and swap)"
         case "$REPLY" in
             Erase*) DISK_MODE="erase" ;;
             *)      DISK_MODE="manual" ;;
@@ -1078,9 +1331,10 @@ step_disk() {
             human="$(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "$size")"
             args+=("$dev" "$human — $model")
         done < "$devmap"
-        tui_menu "Target disk" "Select the disk to install ${DISTRO_NAME} onto:" "${args[0]}" "${args[@]}"
+        tui_menu "Target Disk" "Select the disk to install ${DISTRO_NAME} onto:" "${args[0]}" "${args[@]}"
         DISK_TARGET="$REPLY"
     else
+        printf '\n'
         info "Available disks:"
         local lines=() dev size model
         while IFS=$'\t' read -r dev size model; do
@@ -1088,7 +1342,7 @@ step_disk() {
             lines+=("$dev")
             local human
             human="$(numfmt --to=iec --suffix=B "$size" 2>/dev/null || echo "$size")"
-            printf '  %d) %s  (%s — %s)\n' "${#lines[@]}" "$dev" "$human" "$model"
+            printf '    %2d) %-14s (%s — %s)\n' "${#lines[@]}" "$dev" "$human" "$model"
         done < "$devmap"
         text_input "Choose a disk by number" "1"
         if [[ "$REPLY" =~ ^[0-9]+$ ]] && [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "${#lines[@]}" ]; then
@@ -1109,15 +1363,18 @@ step_disk() {
         ROOT_PART=""
         SWAP_PART=""
         if [ "$UI_MODE" = "tui" ]; then
-            tui_yesno "Confirm erase disk" "ALL DATA on $DISK_TARGET will be erased when installation begins.\n\nFixed layout:\n  - 1 MiB BIOS boot (amd64)\n  - 512 MiB EFI System Partition (/boot/efi)\n  - 4 GiB swap\n  - Remainder ${ROOT_FSTYPE} root (/)\n\nUse this disk?" "n"
+            tui_yesno "Confirm Erase Disk" "ALL DATA on ${DISK_TARGET} will be erased when installation begins.\n\nFixed GPT layout:\n  - 1 MiB BIOS boot (amd64)\n  - 512 MiB EFI System Partition (/boot/efi)\n  - 4 GiB swap\n  - Remainder ${ROOT_FSTYPE} root (/)\n\nUse ${DISK_TARGET}?" "n"
         else
-            text_yesno "ALL DATA on $DISK_TARGET will be erased when installation begins (${ROOT_FSTYPE} root). Use this disk?" "n"
+            printf '\n'
+            warn "ALL DATA on $DISK_TARGET will be erased when installation begins."
+            info "Layout: 512 MiB EFI (/boot/efi) + 4 GiB swap + ${ROOT_FSTYPE} root (/)"
+            text_yesno "Erase and install onto $DISK_TARGET?" "n"
         fi
         [ "$REPLY" = "y" ] || die "Aborted by user before partitioning."
     else
         configure_manual_partitions "$DISK_TARGET"
     fi
-    ok "Target disk: $DISK_TARGET ($DISK_MODE mode)"
+    step_done "Target disk: $DISK_TARGET ($DISK_MODE mode)"
 }
 
 # -----------------------------------------------------------------------------
@@ -1133,60 +1390,52 @@ validate_username() {
 }
 
 step_user() {
-    STEP_LABEL="Step 6 of 7: Who are you?"
-    step "Who are you?"
-    hr
+    step_begin 6 7 "User Account & Hostname"
 
-    # Full name
-    ui_input "Your name" "Enter your full name (or leave empty to skip)" ""
+    ui_input "Your Name" "Enter your full name (optional, leave empty to skip)" ""
     FULLNAME="$REPLY"
 
-    # Computer name (hostname)
     local def_host="ubuntu"
     [ "$DISTRO_ID" = "pop" ] && def_host="pop-os"
     while :; do
-        ui_input "Computer name" "Enter a hostname for this computer" "$def_host"
+        ui_input "Computer Name" "Enter a hostname for this computer" "$def_host"
         HOSTNAME="$REPLY"
-        [[ "$HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || { ui_warn "Invalid hostname" "Invalid hostname '$HOSTNAME'. Use letters, digits, and hyphens."; continue; }
+        [[ "$HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$ ]] || { ui_warn "Invalid Hostname" "Invalid hostname '$HOSTNAME'. Use letters, digits, and hyphens."; continue; }
         break
     done
 
-    # Username
     while :; do
-        ui_input "Pick a username" "Enter a username (lowercase, starts with a letter)" "user"
+        ui_input "Username" "Enter a username (lowercase, starts with a letter)" "user"
         USERNAME="$REPLY"
         if validate_username "$USERNAME"; then break; fi
-        ui_warn "Invalid username" "Invalid username '$USERNAME'. Use lowercase letters/digits/'_'/'-', max 32 chars, not 'root' or system names."
+        ui_warn "Invalid Username" "Invalid username '$USERNAME'. Use lowercase letters, digits, '_' or '-', max 32 chars."
     done
 
-    # Password (twice)
     while :; do
-        ui_password "Choose a password" "Enter a password for $USERNAME (min 8 chars)"
+        ui_password "Choose Password" "Enter a password for ${USERNAME} (min 8 chars)"
         PASSWORD="$REPLY"
         if [ "${#PASSWORD}" -lt 8 ]; then
-            ui_warn "Invalid password" "Password must be at least 8 characters. Try again."
+            ui_warn "Weak Password" "Password must be at least 8 characters. Try again."
             continue
         fi
-        ui_password "Confirm your password" "Re-enter the password to confirm"
+        ui_password "Confirm Password" "Re-enter the password for ${USERNAME}"
         if [ "$REPLY" = "$PASSWORD" ]; then break; fi
-        ui_warn "Password mismatch" "Passwords do not match. Try again."
+        ui_warn "Password Mismatch" "Passwords do not match. Try again."
     done
 
-    ok "User: ${FULLNAME:-$USERNAME} ($USERNAME) on $HOSTNAME"
+    step_done "User: ${FULLNAME:-$USERNAME} ($USERNAME) on $HOSTNAME"
 }
 
 # -----------------------------------------------------------------------------
 # STEP: summary
 # -----------------------------------------------------------------------------
 step_summary() {
-    STEP_LABEL="Step 7 of 7: Ready to Install"
-    step "Ready to Install"
-    hr
+    step_begin 7 7 "Ready to Install"
     local disk_plan=""
     if [ "$DISK_MODE" = "erase" ]; then
         disk_plan="$(cat <<EOF
-  Mode        : Fixed default (ERASE entire disk $DISK_TARGET)
-  Layout      : 512 MiB FAT32 (/boot/efi) + 4 GiB swap + ${ROOT_FSTYPE} (/)
+    Mode        : Fixed GPT (ERASE entire disk ${DISK_TARGET})
+    Layout      : 512 MiB FAT32 (/boot/efi) + 4 GiB swap + ${ROOT_FSTYPE} (/)
 EOF
 )"
     else
@@ -1199,39 +1448,36 @@ EOF
             swap_act="${SWAP_PART} ($([ "$FORMAT_SWAP" -eq 1 ] && echo 'initialize swap' || echo 'reuse swap'))"
         fi
         disk_plan="$(cat <<EOF
-  Mode        : Manual partitioning ($DISK_TARGET)
-  Root (/)    : ${ROOT_PART} (${root_act})
-  EFI         : ${efi_act}
-  Swap        : ${swap_act}
+    Mode        : Manual partitioning (${DISK_TARGET})
+    Root (/)    : ${ROOT_PART} (${root_act})
+    EFI         : ${efi_act}
+    Swap        : ${swap_act}
 EOF
 )"
     fi
 
     local summary
     summary="$(cat <<EOF
-Distribution : ${DISTRO_NAME}
-Language     : $LOCALE
-Keyboard     : $KEYBOARD_LAYOUT${KEYBOARD_VARIANT:+ ($KEYBOARD_VARIANT)}
-Timezone     : $TIMEZONE
+  Distribution : ${DISTRO_NAME}
+  Language     : ${LOCALE}
+  Keyboard     : ${KEYBOARD_LAYOUT}${KEYBOARD_VARIANT:+ (${KEYBOARD_VARIANT})}
+  Timezone     : ${TIMEZONE}
 
-Storage:
+  Storage:
 ${disk_plan}
 
-Account:
-  Full name  : ${FULLNAME:-"(none)"}
-  Username   : $USERNAME
-  Hostname   : $HOSTNAME
-
-When installation finishes, you can choose to restart or keep exploring.
+  Account:
+    Full name  : ${FULLNAME:-"(none)"}
+    Username   : ${USERNAME}
+    Hostname   : ${HOSTNAME}
 EOF
 )"
     if [ "$UI_MODE" = "tui" ]; then
-        tui_msg "Ready to install ${DISTRO_NAME}" "$summary"
+        tui_yesno "Ready to Install ${DISTRO_NAME}" "${summary}\n\nNothing has been written to disk yet.\nBegin installing ${DISTRO_NAME} onto ${DISK_TARGET} now?" "n"
     else
-        printf '%s\n' "$summary"
+        printf '\n%s\n\n' "$summary"
+        text_yesno "Begin installing ${DISTRO_NAME} onto ${DISK_TARGET} now?" "n"
     fi
-
-    ui_yesno "Begin installing ${DISTRO_NAME} now?" "n"
     [ "$REPLY" = "y" ] || die "Aborted by user at the summary step."
 }
 
@@ -1313,14 +1559,14 @@ available_root_filesystems() {
 
 describe_root_filesystem() {
     case "$1" in
-        ext4)  echo "ext4 — Standard Linux journaling filesystem (recommended)" ;;
-        btrfs) echo "btrfs — Copy-on-write filesystem with snapshots" ;;
-        xfs)   echo "xfs — High-performance 64-bit journaling filesystem" ;;
-        ext3)  echo "ext3 — Legacy journaling ext filesystem" ;;
-        ext2)  echo "ext2 — Legacy non-journaling ext filesystem" ;;
-        f2fs)  echo "f2fs — Flash-Friendly File System (SSD/NVMe/flash)" ;;
-        jfs)   echo "jfs — IBM Journaled File System" ;;
-        *)     echo "$1" ;;
+        ext4)  echo "Standard Linux journaling filesystem (recommended)" ;;
+        btrfs) echo "Copy-on-write filesystem with snapshots" ;;
+        xfs)   echo "High-performance 64-bit journaling filesystem" ;;
+        ext3)  echo "Legacy journaling ext filesystem" ;;
+        ext2)  echo "Legacy non-journaling ext filesystem" ;;
+        f2fs)  echo "Flash-Friendly File System (SSD/NVMe/flash)" ;;
+        jfs)   echo "IBM Journaled File System" ;;
+        *)     echo "$1 filesystem" ;;
     esac
 }
 
@@ -1340,17 +1586,17 @@ choose_root_filesystem() {
     if [ "$UI_MODE" = "tui" ]; then
         local args=() fs
         for fs in "${fs_list[@]}"; do
-            args+=("format_${fs}" "$(describe_root_filesystem "$fs")")
+            args+=("format_${fs}" "$(printf '%-5s — %s' "$fs" "$(describe_root_filesystem "$fs")")")
         done
         if [ "$allow_keep" -eq 1 ] && [ -n "$existing_fs" ]; then
             args+=("keep" "Keep existing ${existing_fs} filesystem without formatting")
         fi
-        tui_menu "Root (/) filesystem" "$prompt" "format_${fs_list[0]}" "${args[@]}"
+        tui_menu "Root (/) Filesystem" "$prompt" "format_${fs_list[0]}" "${args[@]}"
     else
         local tags=() choices=() fs
         for fs in "${fs_list[@]}"; do
             tags+=("format_${fs}")
-            choices+=("${fs} — $(describe_root_filesystem "$fs")")
+            choices+=("$(printf '%-5s — %s' "$fs" "$(describe_root_filesystem "$fs")")")
         done
         if [ "$allow_keep" -eq 1 ] && [ -n "$existing_fs" ]; then
             tags+=("keep")
@@ -1463,6 +1709,9 @@ configure_manual_partitions() {
             info "Launching cfdisk on $dev. Write then Quit when finished."
         fi
         cfdisk "$dev" || true
+        if [ "$UI_MODE" = "tui" ]; then
+            tput clear 2>/dev/null || printf '\033[2J\033[H'
+        fi
         partprobe "$dev" >/dev/null 2>&1 || true
         sleep 1
         udevadm settle >/dev/null 2>&1 || true
@@ -1738,7 +1987,7 @@ configure_fstab() {
     info "Writing /etc/fstab (UUID-based)."
     local fstab="$TARGET_ROOT/etc/fstab"
     {
-        printf '# /etc/fstab — generated by ubuntu-cli-installer\n'
+        printf '# /etc/fstab — generated by %s-cli-installer\n' "$DISTRO_ID"
         printf '# <device>\t<dir>\t<type>\t<options>\t<dump>\t<pass>\n'
         if [ -n "$EFI_PART" ]; then
             local efi_uuid
@@ -1779,7 +2028,7 @@ configure_locale() {
 configure_keyboard() {
     info "Configuring keyboard layout in target ($KEYBOARD_LAYOUT)."
     cat > "$TARGET_ROOT/etc/default/keyboard" <<EOF
-# Generated by ubuntu-cli-installer
+# Generated by ${DISTRO_ID}-cli-installer
 XKBLAYOUT="$KEYBOARD_LAYOUT"
 XKBVARIANT="$KEYBOARD_VARIANT"
 XKBOPTIONS=""
@@ -1813,15 +2062,29 @@ ff02::2 ip6-allrouters
 EOF
 }
 
-# Equivalent of calamares 'displaymanager' (autodetect gdm3/lightdm/sddm).
+# Equivalent of calamares 'displaymanager' (autodetect gdm3/lightdm/sddm/cosmic-greeter).
 configure_displaymanager() {
     info "Configuring display manager (autodetect)."
     chroot "$TARGET_ROOT" /bin/bash <<'CHROOT_EOF'
 set -e
-for dm in gdm3 lightdm sddm; do
+for dm in cosmic-greeter gdm3 lightdm sddm; do
     if dpkg -s "$dm" >/dev/null 2>&1; then
-        echo "Found DM: $dm — re-enabling."
-        systemctl --root=/ enable "$dm" >/dev/null 2>&1 || true
+        echo "Found DM: $dm — enabling."
+        if [ "$dm" = "cosmic-greeter" ]; then
+            mkdir -p /etc/X11 /etc/systemd/system
+            echo "/usr/bin/cosmic-greeter" > /etc/X11/default-display-manager
+            if [ -e /lib/systemd/system/cosmic-greeter.service ]; then
+                ln -sf /lib/systemd/system/cosmic-greeter.service /etc/systemd/system/display-manager.service
+            elif [ -e /usr/lib/systemd/system/cosmic-greeter.service ]; then
+                ln -sf /usr/lib/systemd/system/cosmic-greeter.service /etc/systemd/system/display-manager.service
+            fi
+            systemctl --root=/ disable greetd.service >/dev/null 2>&1 || true
+            systemctl --root=/ enable cosmic-greeter-daemon.service >/dev/null 2>&1 || true
+        else
+            systemctl --root=/ enable "$dm" >/dev/null 2>&1 || true
+        fi
+        systemctl --root=/ set-default graphical.target >/dev/null 2>&1 || true
+        break
     fi
 done
 CHROOT_EOF
@@ -1881,16 +2144,26 @@ CHROOT_EOF
 # Equivalent of calamares 'grubcfg' (defaults + GRUB_ENABLE_CRYPTODISK=true).
 configure_grubcfg() {
     info "Writing /etc/default/grub (GRUB_ENABLE_CRYPTODISK=true)."
-    cat > "$TARGET_ROOT/etc/default/grub" <<'EOF'
-# Generated by ubuntu-cli-installer.
+    {
+        printf '# Generated by %s-cli-installer.\n' "$DISTRO_ID"
+        cat <<'EOF'
 GRUB_DEFAULT=0
 GRUB_TIMEOUT_STYLE=menu
 GRUB_TIMEOUT=10
+EOF
+        if [ "$DISTRO_ID" = "pop" ]; then
+            printf 'GRUB_DISTRIBUTOR="Pop!_OS"\n'
+        else
+            cat <<'EOF'
 GRUB_DISTRIBUTOR=`lsb_release -i -s 2>/dev/null || ( . /etc/os-release 2>/dev/null && echo "${NAME:-Ubuntu}" ) || echo Ubuntu`
+EOF
+        fi
+        cat <<'EOF'
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
 GRUB_CMDLINE_LINUX=""
 GRUB_ENABLE_CRYPTODISK=true
 EOF
+    } > "$TARGET_ROOT/etc/default/grub"
 }
 
 # Equivalent of calamares 'bootloader' (UEFI + legacy BIOS on amd64; UEFI-only on arm64).
@@ -1948,7 +2221,12 @@ CHROOT_EOF
           "$TARGET_ROOT/etc/ssh/sshd_config.d/01-uvb-live-ssh.conf" \
           "$TARGET_ROOT/usr/local/sbin/uvb-live-ssh-setup" \
           "$TARGET_ROOT/etc/systemd/system/uvb-live-ssh-user.service" \
-          "$TARGET_ROOT/etc/systemd/system/multi-user.target.wants/uvb-live-ssh-user.service"
+          "$TARGET_ROOT/etc/systemd/system/multi-user.target.wants/uvb-live-ssh-user.service" \
+          "$TARGET_ROOT/usr/local/sbin/uvb-live-cosmic-autologin" \
+          "$TARGET_ROOT/etc/systemd/system/uvb-live-cosmic-autologin.service" \
+          "$TARGET_ROOT/etc/systemd/system/multi-user.target.wants/uvb-live-cosmic-autologin.service" \
+          "$TARGET_ROOT/usr/share/applications/install-system.desktop" \
+          "$TARGET_ROOT/etc/skel/Desktop/install-system.desktop"
     rm -rf "$TARGET_ROOT/etc/calamares"
     info "Installing language packs for $LOCALE (best-effort, online only)."
     local short="${LOCALE%.*}"           # en_US.UTF-8 -> en_US
@@ -2084,10 +2362,16 @@ step_finished() {
     fi
 
     if [ "$action" = "restart" ]; then
+        if [ "$UI_MODE" = "tui" ]; then
+            tput clear 2>/dev/null || printf '\033[2J\033[H'
+        fi
         info "Rebooting into the new ${DISTRO_NAME} system..."
         sleep 1
         systemctl -i reboot || reboot
     else
+        if [ "$UI_MODE" = "tui" ]; then
+            tput clear 2>/dev/null || printf '\033[2J\033[H'
+        fi
         ok "Continuing in live mode. Target filesystems are unmounted; run 'sudo reboot' when ready."
     fi
 }
