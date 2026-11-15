@@ -808,7 +808,7 @@ EOF
         if [[ "${TARGET_DESKTOP:-gnome}" != "cli" && "${TARGET_DESKTOP:-gnome}" != "cosmic" ]]; then
             install_popos_desktop_branding
         fi
-        ensure_popos_default_settings_branding
+        install_popos_branding_migration_helper
         cleanup_popos_ubuntu_remnants
     fi
 
@@ -1328,6 +1328,10 @@ function run_chroot() {
         fi
     fi
 
+    if [[ "$UVB_DISTRO" == "popos" && -f "$SCRIPT_DIR/popos-migrate-branding" ]]; then
+        host_priv install -m 0755 "$SCRIPT_DIR/popos-migrate-branding" "$WORKSPACE_CHROOT/root/popos-migrate-branding"
+    fi
+
     host_priv rm -rf "$WORKSPACE_CHROOT/root/hooks"
     local _hooks_base="${HOOKS_DIR:-$SCRIPT_DIR/hooks}"
     if [[ -d "$_hooks_base/chroot" ]]; then
@@ -1376,7 +1380,7 @@ function run_chroot() {
         DEVEL_VERSION="${DEVEL_VERSION:-}" \
         /root/build.sh --chroot-internal -
 
-    host_priv rm -f "$WORKSPACE_CHROOT/root/build.sh" "$WORKSPACE_CHROOT/root/install-system"
+    host_priv rm -f "$WORKSPACE_CHROOT/root/build.sh" "$WORKSPACE_CHROOT/root/install-system" "$WORKSPACE_CHROOT/root/popos-migrate-branding"
     host_priv rm -rf "$WORKSPACE_CHROOT/root/lib" "$WORKSPACE_CHROOT/root/calamares-config" "$WORKSPACE_CHROOT/root/hooks"
     if [[ -n "${QEMU_USER_COPIED:-}" && -f "${QEMU_USER_COPIED}" ]]; then
         host_priv rm -f "${QEMU_USER_COPIED}"
@@ -1396,7 +1400,6 @@ function chroot_prepare() {
     # Modern deb822 Ubuntu APT sources; replace debootstrap's one-line sources.list.
     rm -f /etc/apt/sources.list
     install -d /etc/apt/sources.list.d
-    [[ "$UVB_DISTRO" == "popos" ]] && ensure_popos_legacy_sources_list_stub
 
     local keyring="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
     local suites="${TARGET_UBUNTU_VERSION} ${TARGET_UBUNTU_VERSION}-updates ${TARGET_UBUNTU_VERSION}-backports ${TARGET_UBUNTU_VERSION}-security"

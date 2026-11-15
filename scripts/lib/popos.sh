@@ -1,16 +1,13 @@
 #!/bin/bash
-# Pop!_OS-specific repository setup, pop-default-settings branding & pinning,
-# Plymouth/GRUB/desktop theming, COSMIC variant, native Firefox helper, and
-# System76 driver support.
+# Pop!_OS-specific repository setup (Ubuntu-safe scoped & negative pinning),
+# Plymouth/GRUB/desktop aesthetic theming, COSMIC variant, native Firefox
+# helper, System76 driver support, and post-upgrade branding migration tool.
 
 POP_APT_URL="https://apt.pop-os.org"
 POP_APT_ORIGIN_URL="https://apt-origin.pop-os.org"
 POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
-POP_PREF_DIVERT_TARGET="/etc/apt/pop-default-settings.pref.diverted"
 POP_KEYRING_FILE="/usr/share/keyrings/pop-os-archive-keyring.gpg"
 POP_RELEASE_URL=""
-POP_PROPRIETARY_URL=""
-POP_RELEASE_UBUNTU_URL=""
 
 function install_firefox_from_popos() {
     echo "=====> Firefox: installing the native build from the Pop!_OS repository"
@@ -49,40 +46,35 @@ EOF
     apt-get install -y --allow-downgrades firefox
 }
 
-function neutralize_pop_default_settings_blanket_pin() {
-    install -d /etc/apt/preferences.d
-    # /etc/apt/preferences.d/pop-default-settings is NOT a dpkg conffile, so
-    # divert it outside preferences.d before/after package updates so future
-    # pop-default-settings upgrades cannot restore the blanket "Package: *" pin.
-    if [[ "$(dpkg-divert --listpackage /etc/apt/preferences.d/pop-default-settings 2>/dev/null || true)" != "LOCAL" ]]; then
-        if [[ -e /etc/apt/preferences.d/pop-default-settings ]]; then
-            mv -f /etc/apt/preferences.d/pop-default-settings "$POP_PREF_DIVERT_TARGET"
-        fi
-        dpkg-divert --local --no-rename --divert "$POP_PREF_DIVERT_TARGET" \
-            --add /etc/apt/preferences.d/pop-default-settings >/dev/null 2>&1 || true
-    fi
-    cat <<'EOF' > /etc/apt/preferences.d/pop-default-settings
-# Blanket "Package: *" pin diverted to /etc/apt/pop-default-settings.pref.diverted
-# by build-popos so standard Ubuntu desktops (such as vanilla-gnome-desktop)
-# remain installable without dependency conflicts. Scoped pins live in pop-os-release.
-EOF
-}
-
 function write_popos_scoped_apt_pin() {
     install -d /etc/apt/preferences.d
-    # Deliberately omit update-manager-core, ubuntu-release-upgrader-*, systemd*,
-    # and udev* so vanilla-gnome-desktop and Ubuntu base security updates stay conflict-free.
+    # Keep Ubuntu base behavior and end-user `apt upgrade` conflict-free:
+    # elevate only Pop!_OS aesthetic, COSMIC, kernel/driver, and native app packages,
+    # while blocking pop-default-settings, pop-server/pop-desktop, and Pop's
+    # ubuntu-minimal/ubuntu-standard container transitionals from o=pop-os-release.
     cat <<'EOF' > /etc/apt/preferences.d/pop-os-release
-Package: base-files pop-* plymouth-theme-pop* grub-theme-pop grub-pop-* cosmic-* libcosmic* xdg-desktop-portal-cosmic cutecosmic* popsicle* linux-system76* linux-image-system76* linux-headers-system76* system76-* repolib python3-repolib repoman hidpi-daemon libsystem76* libs76-* gnome-shell-extension-system76* gnome-shell-extension-pop* gnome-shell-extension-alt-tab-raise-first-window gnome-shell-extension-always-show-workspaces gnome-shell-extension-do-not-disturb adw-gtk3 appstream-data-pop* network-manager-config-connectivity-pop greetd
+Package: pop-theme pop-gtk-theme pop-icon-theme pop-sound-theme pop-gnome-shell-theme pop-fonts pop-wallpapers pop-plymouth-theme plymouth-theme-pop-basic grub-theme-pop grub-pop-* pop-de-cosmic pop-pipewire pop-launcher* pop-shell* pop-keyring pop-transition cosmic-* libcosmic* xdg-desktop-portal-cosmic cutecosmic* popsicle* linux-system76* linux-image-system76* linux-headers-system76* system76-* repolib python3-repolib repoman hidpi-daemon libsystem76* libs76-* gnome-shell-extension-system76* gnome-shell-extension-pop* gnome-shell-extension-alt-tab-raise-first-window gnome-shell-extension-always-show-workspaces gnome-shell-extension-do-not-disturb adw-gtk3 appstream-data-pop* network-manager-config-connectivity-pop greetd
 Pin: release o=pop-os-release
 Pin-Priority: 1001
+
+Package: pop-default-settings pop-default-settings-* pop-server pop-desktop pop-desktop-raspi pop-container-* pop-upgrade pop-system-updater ubuntu-minimal ubuntu-standard base-files systemd systemd-* libsystemd* udev libudev* dracut dracut-*
+Pin: release o=pop-os-release
+Pin-Priority: -1
 EOF
 }
 
 function install_popos_system76_driver() {
     echo "=====> System76 hardware driver: system76-driver (from Pop!_OS repos)"
+    # Install system76-ubuntu-repo first when available so system76-driver's
+    # `pop-default-settings | system76-ubuntu-repo` dependency never pulls pop-default-settings.
+    if apt-cache show system76-ubuntu-repo >/dev/null 2>&1; then
+        apt-get install -y system76-ubuntu-repo
+    fi
     apt-get install -y system76-driver
-    neutralize_pop_default_settings_blanket_pin
+    if [[ -f /etc/apt/sources.list.d/pop-os-release-ubuntu.sources && \
+          -f /etc/apt/sources.list.d/system76-ubuntu-repo.sources ]]; then
+        rm -f /etc/apt/sources.list.d/system76-ubuntu-repo.sources
+    fi
 }
 
 function resolve_system76_driver_choice() {
@@ -107,86 +99,9 @@ function _popos_source_uri_from_file() {
     awk '/^Enabled:[[:space:]]*yes/ {en=1} /^URIs:[[:space:]]*/ {uri=$2} END {if (en && uri != "") print uri}' "$file"
 }
 
-function ensure_popos_legacy_sources_list_stub() {
-    # pop-default-settings.postinst runs `grep` and `sed -i` on /etc/apt/sources.list
-    # unconditionally under `set -e` even when DEB822 .sources files are used.
-    install -d /etc/apt
-    if [[ ! -f /etc/apt/sources.list ]]; then
-        cat <<'EOF' > /etc/apt/sources.list
-# Pop!_OS APT sources are configured in /etc/apt/sources.list.d/*.sources
-EOF
-    fi
-}
-
-function restore_popos_apt_sources() {
-    ensure_popos_legacy_sources_list_stub
-    local keyring="$POP_KEYRING_FILE"
-    local release_url="${POP_RELEASE_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-release.sources)}"
-    local proprietary_url="${POP_PROPRIETARY_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-apps.sources)}"
-    local release_ubuntu_url="${POP_RELEASE_UBUNTU_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-release-ubuntu.sources)}"
-
-    # pop-default-settings.postinst calls `apt-manage modify system --default-mirror`
-    # which disables ubuntu.sources and forces http://apt.pop-os.org/ubuntu in
-    # system.sources (breaking arm64/ports.ubuntu.com and custom --mirror values)
-    # and rewrites pop-os-apps.sources to HTTP. Restore the configured mirror + HTTPS.
-    rm -f /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.disabled
-    local sys_keyring=""
-    if [[ -f /usr/share/keyrings/ubuntu-archive-keyring.gpg ]]; then
-        sys_keyring="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
-    elif [[ -f /etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg ]]; then
-        sys_keyring="/etc/apt/trusted.gpg.d/ubuntu-keyring-2018-archive.gpg"
-    fi
-    local suites="${TARGET_UBUNTU_VERSION} ${TARGET_UBUNTU_VERSION}-updates ${TARGET_UBUNTU_VERSION}-backports ${TARGET_UBUNTU_VERSION}-security"
-    {
-        echo "X-Repolib-Name: Pop_OS System Sources"
-        echo "Enabled: yes"
-        echo "Types: deb deb-src"
-        echo "URIs: ${TARGET_UBUNTU_MIRROR}"
-        echo "Suites: ${suites}"
-        echo "Components: main restricted universe multiverse"
-        [[ -n "$sys_keyring" ]] && echo "Signed-By: ${sys_keyring}"
-        echo "X-Repolib-Default-Mirror: ${TARGET_UBUNTU_MIRROR}"
-        echo "X-Repolib-ID: system"
-    } > /etc/apt/sources.list.d/system.sources
-    if [[ -n "$proprietary_url" ]]; then
-        cat <<EOF > /etc/apt/sources.list.d/pop-os-apps.sources
-X-Repolib-Name: Pop_OS Applications
-Enabled: yes
-Types: deb
-URIs: ${proprietary_url}
-Suites: ${TARGET_UBUNTU_VERSION}
-Components: main
-Signed-By: ${keyring}
-EOF
-    fi
-    if [[ -n "$release_url" ]]; then
-        cat <<EOF > /etc/apt/sources.list.d/pop-os-release.sources
-X-Repolib-Name: Pop_OS release
-Enabled: yes
-Types: deb
-URIs: ${release_url}
-Suites: ${TARGET_UBUNTU_VERSION}
-Components: main
-Signed-By: ${keyring}
-EOF
-    fi
-    if [[ -n "$release_ubuntu_url" ]]; then
-        cat <<EOF > /etc/apt/sources.list.d/pop-os-release-ubuntu.sources
-X-Repolib-Name: Pop_OS release-ubuntu
-Enabled: yes
-Types: deb
-URIs: ${release_ubuntu_url}
-Suites: ${TARGET_UBUNTU_VERSION}
-Components: main
-Signed-By: ${keyring}
-EOF
-    fi
-}
-
 function setup_pop_apt_repos() {
-    echo "=====> configuring Pop!_OS APT repositories from ${POP_APT_URL} (staging excluded) ..."
+    echo "=====> configuring Pop!_OS APT repositories from ${POP_APT_URL} (Ubuntu-safe scoped pins, staging excluded) ..."
 
-    ensure_popos_legacy_sources_list_stub
     apt-get install -y gnupg dirmngr ca-certificates curl
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
@@ -201,8 +116,6 @@ function setup_pop_apt_repos() {
 
     local name base url srcfile added_any=0
     POP_RELEASE_URL=""
-    POP_PROPRIETARY_URL=""
-    POP_RELEASE_UBUNTU_URL=""
     rm -f /etc/apt/sources.list.d/pop-os-{release,proprietary,release-ubuntu}.list
     for name in release proprietary release-ubuntu; do
         case "$name" in
@@ -217,11 +130,7 @@ function setup_pop_apt_repos() {
                 break
             fi
         done
-        case "$name" in
-            release)        POP_RELEASE_URL="$url" ;;
-            proprietary)    POP_PROPRIETARY_URL="$url" ;;
-            release-ubuntu) POP_RELEASE_UBUNTU_URL="$url" ;;
-        esac
+        [[ "$name" == "release" ]] && POP_RELEASE_URL="$url"
         if [[ -n "$url" ]]; then
             cat <<EOF > "$srcfile"
 X-Repolib-Name: Pop_OS ${name}
@@ -255,112 +164,30 @@ EOF
     fi
 
     write_popos_scoped_apt_pin
-    neutralize_pop_default_settings_blanket_pin
 
     apt-get update
 
     apt-get install -y pop-keyring || \
         echo "  WARN  pop-keyring not installable; keeping keyserver-fetched key." >&2
-
-    # Pop!_OS 24.04+ ships OS branding (/etc/os-release, /etc/lsb-release, /etc/issue,
-    # motd, pop-os-branding icons, plymouth-theme-pop-basic) via pop-default-settings
-    # using dpkg-divert rather than a forked base-files package.
-    echo "=====> installing pop-default-settings (Pop!_OS branding & defaults) ..."
-    ensure_popos_legacy_sources_list_stub
-    if apt-cache show pop-default-settings >/dev/null 2>&1; then
-        apt-get install -y pop-default-settings
-        neutralize_pop_default_settings_blanket_pin
-        restore_popos_apt_sources
-
-        apt-get update
-        apt_install_available "Pop!_OS default settings extras" \
-            pop-default-settings-zram \
-            pop-default-settings-ntsync
-    else
-        echo "=====> pop-default-settings unavailable; falling back to base-files ..."
-        apt-get install -y --allow-downgrades base-files
-    fi
-
-    if grep -qs '^ID=pop$' /etc/os-release; then
-        # shellcheck source=/dev/null
-        echo "=====> /etc/os-release: $(. /etc/os-release && echo "${PRETTY_NAME:-${NAME:-unknown}}")"
-    else
-        echo "  WARN  /etc/os-release does not report ID=pop for '${TARGET_UBUNTU_VERSION}'." >&2
-    fi
 }
 
-function ensure_popos_default_settings_branding() {
-    echo "=====> Verifying Pop!_OS branding via pop-default-settings (profile=${TARGET_IMAGE_PROFILE:-desktop}, desktop=${TARGET_DESKTOP:-gnome})"
-
-    ensure_popos_legacy_sources_list_stub
-    if ! dpkg -s pop-default-settings >/dev/null 2>&1; then
-        if apt-cache show pop-default-settings >/dev/null 2>&1; then
-            apt-get install -y pop-default-settings
-            neutralize_pop_default_settings_blanket_pin
-            restore_popos_apt_sources
-            apt-get update
-            apt_install_available "Pop!_OS default settings extras" \
-                pop-default-settings-zram \
-                pop-default-settings-ntsync
-        else
-            >&2 echo "ERROR: pop-default-settings is not available for Pop!_OS branding."
-            exit 1
-        fi
-    fi
-
-    neutralize_pop_default_settings_blanket_pin
-
-    # Ensure dpkg-divert symlinks owned by pop-default-settings remain intact
-    # across all desktop stacks and CLI/TTY builds.
-    local pair src dst need_reconfigure=0
-    for pair in \
-        "/etc/os-release=/etc/pop-os/os-release" \
-        "/usr/lib/os-release=/etc/pop-os/os-release" \
-        "/etc/lsb-release=/etc/pop-os/lsb-release" \
-        "/etc/issue=/etc/pop-os/issue" \
-        "/etc/issue.net=/etc/pop-os/issue.net" \
-        "/etc/legal=/etc/pop-os/legal" \
-        "/etc/update-motd.d/10-help-text=/etc/pop-os/update-motd.d/10-help-text" \
-        "/etc/update-motd.d/50-motd-news=/etc/pop-os/update-motd.d/50-motd-news"; do
-        src="${pair%%=*}"
-        dst="${pair#*=}"
-        [[ -e "$dst" ]] || continue
-        if [[ "$(readlink -f "$src" 2>/dev/null || true)" != "$(readlink -f "$dst")" ]]; then
-            need_reconfigure=1
-            if [[ "$(dpkg-divert --listpackage "$src" 2>/dev/null || true)" != "pop-default-settings" ]]; then
-                dpkg-divert --add --package pop-default-settings --rename --divert "${src}.diverted" "$src" >/dev/null 2>&1 || true
-            fi
-            install -d "$(dirname "$src")"
-            ln --force --relative --symbolic "$dst" "$src"
-        fi
-    done
-    if [[ "$need_reconfigure" -eq 1 ]]; then
-        restore_popos_apt_sources
-    fi
-
-    if ! grep -qs '^ID=pop$' /etc/os-release; then
-        >&2 echo "ERROR: /etc/os-release does not report ID=pop after pop-default-settings branding."
-        exit 1
+function install_popos_branding_migration_helper() {
+    if [[ -f /root/popos-migrate-branding ]]; then
+        echo "=====> installing /usr/local/bin/popos-migrate-branding (post-upgrade Pop!_OS identity helper)"
+        install -m 0755 /root/popos-migrate-branding /usr/local/bin/popos-migrate-branding
     fi
 
     # Expose distributor-logo-pop-os under hicolor so non-Pop icon themes (e.g.
-    # KDE Breeze, LXQt, XFCE) still resolve LOGO=distributor-logo-pop-os.
-    local logo_src=""
-    if [[ -f /usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg ]]; then
-        logo_src="/usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg"
-    elif [[ -f /usr/share/icons/pop-os-branding/pop_icon.svg ]]; then
-        logo_src="/usr/share/icons/pop-os-branding/pop_icon.svg"
-    fi
-    if [[ -n "$logo_src" && ! -e /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg ]]; then
+    # KDE Breeze, LXQt, XFCE) resolve LOGO=distributor-logo-pop-os after migration.
+    if [[ -f /usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg && \
+          ! -e /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg ]]; then
         install -d /usr/share/icons/hicolor/scalable/places
-        cp -a "$logo_src" /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg
+        cp -a /usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg \
+            /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg
         if command -v gtk-update-icon-cache >/dev/null 2>&1; then
             gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
         fi
     fi
-
-    # shellcheck source=/dev/null
-    echo "=====> Pop!_OS branding verified: $(. /etc/os-release && echo "${PRETTY_NAME:-Pop!_OS}")"
 }
 
 function ensure_popos_plymouth_alternatives() {
@@ -568,11 +395,11 @@ gtk-theme = 'Pop-dark'
 icon-theme = 'Pop'
 cursor-theme = 'Pop'
 EOF
-            if [[ -f /usr/share/icons/pop-os-branding/256x256/apps/ubuntu-logo-icon.png ]]; then
+            if [[ -f /usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg ]]; then
                 cat <<'EOF' >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
 
 [org.gnome.login-screen]
-logo = '/usr/share/icons/pop-os-branding/256x256/apps/ubuntu-logo-icon.png'
+logo = '/usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg'
 EOF
             fi
         fi
@@ -621,8 +448,8 @@ EOF
             if [[ -n "$wall" ]]; then
                 echo "background = '${wall}'" >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
             fi
-            if [[ -f /usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg ]]; then
-                echo "logo = '/usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg'" \
+            if [[ -f /usr/share/icons/Pop/64x64/places/distributor-logo-pop-os.svg ]]; then
+                echo "logo = '/usr/share/icons/Pop/64x64/places/distributor-logo-pop-os.svg'" \
                     >> /usr/share/glib-2.0/schemas/90_pop-branding.gschema.override
             fi
         fi
@@ -638,8 +465,8 @@ EOF
             echo "icon-theme-name=Pop"
             echo "cursor-theme-name=Pop"
             [[ -n "$wall" ]] && echo "background=${wall}"
-            [[ -f /usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg ]] && \
-                echo "logo=/usr/share/icons/pop-os-branding/round-logos/64/distributor-logo.svg"
+            [[ -f /usr/share/icons/Pop/64x64/places/distributor-logo-pop-os.svg ]] && \
+                echo "logo=/usr/share/icons/Pop/64x64/places/distributor-logo-pop-os.svg"
         } > /etc/lightdm/slick-greeter.conf
     fi
 
@@ -788,6 +615,14 @@ function cleanup_popos_ubuntu_remnants() {
 
 function popos_print_cosmic_note() {
     [[ "$UVB_DISTRO" == "popos" ]] || return 0
+    ui_heading "Pop!_OS upgrade-safe branding"
+    echo "  Base OS & APT behave like standard Ubuntu (ubuntu.sources + base-files)"
+    echo "  so 'sudo apt update && sudo apt upgrade' stays conflict-free while keeping"
+    echo "  the Pop!_OS aesthetic (GRUB, Plymouth, themes, and optional COSMIC)."
+    echo "  After upgrading, switch OS identity (/etc/os-release, motd) to Pop!_OS with:"
+    echo "      sudo popos-migrate-branding"
+    echo
+
     if [[ "${TARGET_DESKTOP:-}" == "cosmic" ]]; then
         ui_heading "COSMIC desktop (installed)"
         echo "  Full Pop!_OS COSMIC desktop stack is included with GRUB as the"

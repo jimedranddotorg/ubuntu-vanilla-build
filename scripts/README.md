@@ -4,7 +4,7 @@ The eight entrypoints in `scripts/` source shared modules under `scripts/lib/`:
 
 - `scripts/lib/ui.sh`: semantic CLI logging (`NO_COLOR` / `TERM=dumb` safe), `whiptail`/`dialog` TUI wrappers, storage estimation, and GNU `screen` session launcher.
 - `scripts/lib/common.sh`: CLI/config parsing, release/arch/mirror resolution, cross-arch `qemu-user-static` handling, `debootstrap`, deb822 APT setup, desktop/browser stacks, Chaotic PPR Pacstall install, hooks, and Advanced mode lifecycle.
-- `scripts/lib/popos.sh`: `apt.pop-os.org` repository setup, `pop-default-settings` branding with diverted blanket pin + scoped `pop-os-release` pin, Pop!_OS Plymouth/GRUB/GTK theming, COSMIC desktop variant (`--desktop=cosmic`), native Pop!_OS Firefox deb verification, and `system76-driver`.
+- `scripts/lib/popos.sh`: `apt.pop-os.org` repository setup with Ubuntu-safe scoped & negative `pop-os-release` pins (leaving `ubuntu.sources` and `base-files` untouched), Pop!_OS Plymouth/GRUB/GTK theming, COSMIC desktop variant (`--desktop=cosmic`), native Pop!_OS Firefox deb verification, `system76-driver` (`system76-ubuntu-repo`), and `/usr/local/bin/popos-migrate-branding` installation.
 - `scripts/lib/iso.sh`: live ISO package installation (`desktop` and `cli` profiles), Calamares + `/usr/local/bin/install-system` packaging, Memtest86+ v9.00, `amd64` hybrid and `arm64` UEFI `xorriso` generation.
 - `scripts/lib/disk-image.sh`: `cloud`, `vm`, and `removable` raw GPT `.img` assembly, NoCloud `growpart` seeding, first-boot console wizard, and `qemu-img` exports.
 
@@ -44,3 +44,4 @@ Examples:
 
 - `calamares/` and `calamares-popos/` provide identical Calamares module flows (`settings.conf`, `modules/*.conf`, `i18n/SUPPORTED`, and distro `branding/`). Both exclude `ubiquity` and `"^live-*"` regex removals, and configure btrfs with `compress=zstd:1`.
 - `cli-installer/install-system` is automatically installed to `/usr/local/bin/install-system` on every built ISO.
+- `popos-migrate-branding` is installed to `/usr/local/bin/popos-migrate-branding` on every Pop!_OS ISO and disk image for post-upgrade Pop!_OS identity branding (and can also run standalone on plain Ubuntu).

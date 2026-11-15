@@ -1,0 +1,490 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# popos-migrate-branding -- Upgrade-safe migration from Ubuntu (with or without
+# Pop!_OS repositories) to Pop!_OS branding & aesthetic without installing
+# pop-default-settings (preserving Ubuntu base-files / apt upgrade behavior).
+
+set -Eeuo pipefail
+
+POP_APT_URL="https://apt.pop-os.org"
+POP_APT_ORIGIN_URL="https://apt-origin.pop-os.org"
+POP_KEY_FINGERPRINT="63C46DF0140D738961429F4E204DD8AEC33A7AFF"
+POP_KEYRING_FILE="/usr/share/keyrings/pop-os-archive-keyring.gpg"
+POP_BRAND_DIR="/etc/pop-os"
+
+DO_UPGRADE=1
+DO_DESKTOP_THEME=1
+ACTION="apply"
+
+usage() {
+    cat <<'EOF'
+popos-migrate-branding - Migrate an Ubuntu system to Pop!_OS branding safely after upgrade.
+
+USAGE
+  sudo popos-migrate-branding [options]
+
+OPTIONS
+  --skip-upgrade       Skip running 'apt-get update && apt-get upgrade -y' before branding
+  --no-desktop-theme   Skip installing pop-theme / pop-wallpapers (CLI/headless systems)
+  --status             Show current OS identity, APT pin safety, GRUB, and Plymouth status
+  --revert             Remove Pop!_OS identity diversions and restore Ubuntu base-files links
+  -h, --help           Show this help and exit
+
+WHAT THIS DOES
+  1. Configures apt.pop-os.org (if missing) with scoped Pop!_OS pins and negative (-1)
+     pins on pop-default-settings, pop-server, pop-desktop, and Pop's ubuntu-standard/
+     ubuntu-minimal transitionals so standard Ubuntu 'apt upgrade' never fails.
+  2. Runs 'apt-get update && apt-get upgrade -y' cleanly on the Ubuntu base (unless skipped).
+  3. Ensures Pop!_OS aesthetic packages (pop-plymouth-theme, grub-theme-pop, and
+     pop-theme + pop-wallpapers on desktop systems) are installed and active.
+  4. Applies Pop!_OS OS identity (/etc/os-release, /etc/lsb-release, /etc/issue, motd)
+     via dpkg-divert under /etc/pop-os/ without installing pop-default-settings.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --skip-upgrade)     DO_UPGRADE=0; shift ;;
+        --no-desktop-theme) DO_DESKTOP_THEME=0; shift ;;
+        --status)           ACTION="status"; shift ;;
+        --revert)           ACTION="revert"; shift ;;
+        -h|--help)          usage; exit 0 ;;
+        *)
+            echo "ERROR: Unknown option '$1'. Run '$0 --help' for usage." >&2
+            exit 1
+            ;;
+    esac
+done
+
+require_root() {
+    if [[ "$(id -u)" -ne 0 ]]; then
+        echo "ERROR: This script must be run as root (try: sudo ${0##*/})." >&2
+        exit 1
+    fi
+}
+
+detect_ubuntu_base() {
+    local os_file="/etc/os-release"
+    if [[ -r /usr/lib/os-release.uvb-diverted ]]; then
+        os_file="/usr/lib/os-release.uvb-diverted"
+    elif [[ -r /etc/os-release.uvb-diverted ]]; then
+        os_file="/etc/os-release.uvb-diverted"
+    fi
+    [[ -r "$os_file" ]] || { echo "ERROR: Cannot read ${os_file}." >&2; exit 1; }
+
+    local ID="" ID_LIKE="" UBUNTU_CODENAME="" VERSION_CODENAME="" VERSION_ID=""
+    # shellcheck source=/dev/null
+    . "$os_file"
+
+    BASE_CODENAME="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+    if [[ -z "$BASE_CODENAME" ]] && command -v lsb_release >/dev/null 2>&1; then
+        BASE_CODENAME="$(lsb_release -cs 2>/dev/null || true)"
+    fi
+    case "$BASE_CODENAME" in
+        noble)    BASE_VERSION="24.04" ;;
+        resolute) BASE_VERSION="26.04" ;;
+        *)
+            if [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *ubuntu* ]] && [[ -n "${VERSION_ID:-}" && -n "$BASE_CODENAME" ]]; then
+                BASE_VERSION="$VERSION_ID"
+            else
+                echo "ERROR: Unsupported base release '${BASE_CODENAME:-unknown}' (expected Ubuntu 24.04 noble or 26.04 resolute)." >&2
+                exit 1
+            fi
+            ;;
+    esac
+}
+
+_source_uri_from_file() {
+    local file="$1"
+    [[ -r "$file" ]] || return 0
+    awk '/^Enabled:[[:space:]]*yes/ {en=1} /^URIs:[[:space:]]*/ {uri=$2} END {if (en && uri != "") print uri}' "$file"
+}
+
+write_popos_safe_pins() {
+    install -d /etc/apt/preferences.d
+    cat <<'EOF' > /etc/apt/preferences.d/pop-os-release
+# Safe Pop!_OS APT pins (managed by ubuntu-vanilla-build / popos-migrate-branding):
+# Elevate only Pop!_OS aesthetic, COSMIC, kernel/driver, and native app packages,
+# while pinning intrusive Ubuntu-replacing packages down so 'apt upgrade' behaves
+# cleanly like Ubuntu and never fails for end users.
+Package: pop-theme pop-gtk-theme pop-icon-theme pop-sound-theme pop-gnome-shell-theme pop-fonts pop-wallpapers pop-plymouth-theme plymouth-theme-pop-basic grub-theme-pop grub-pop-* pop-de-cosmic pop-pipewire pop-launcher* pop-shell* pop-keyring pop-transition cosmic-* libcosmic* xdg-desktop-portal-cosmic cutecosmic* popsicle* linux-system76* linux-image-system76* linux-headers-system76* system76-* repolib python3-repolib repoman hidpi-daemon libsystem76* libs76-* gnome-shell-extension-system76* gnome-shell-extension-pop* gnome-shell-extension-alt-tab-raise-first-window gnome-shell-extension-always-show-workspaces gnome-shell-extension-do-not-disturb adw-gtk3 appstream-data-pop* network-manager-config-connectivity-pop greetd
+Pin: release o=pop-os-release
+Pin-Priority: 1001
+
+Package: pop-default-settings pop-default-settings-* pop-server pop-desktop pop-desktop-raspi pop-container-* pop-upgrade pop-system-updater ubuntu-minimal ubuntu-standard base-files systemd systemd-* libsystemd* udev libudev* dracut dracut-*
+Pin: release o=pop-os-release
+Pin-Priority: -1
+EOF
+}
+
+ensure_popos_repos() {
+    install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
+
+    if [[ ! -s "$POP_KEYRING_FILE" ]]; then
+        if [[ -s /etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg ]]; then
+            cp -a /etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg "$POP_KEYRING_FILE"
+        else
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends gnupg dirmngr ca-certificates curl
+            local tmp_gpg_home
+            tmp_gpg_home="$(mktemp -d)"
+            gpg --homedir "$tmp_gpg_home" --batch --keyserver hkps://keyserver.ubuntu.com \
+                --recv-keys "$POP_KEY_FINGERPRINT"
+            gpg --homedir "$tmp_gpg_home" --batch --export "$POP_KEY_FINGERPRINT" > "$POP_KEYRING_FILE"
+            rm -rf "$tmp_gpg_home"
+        fi
+    fi
+
+    local name base url srcfile added_any=0
+    for name in release proprietary release-ubuntu; do
+        case "$name" in
+            release)        srcfile=/etc/apt/sources.list.d/pop-os-release.sources ;;
+            proprietary)    srcfile=/etc/apt/sources.list.d/pop-os-apps.sources ;;
+            release-ubuntu) srcfile=/etc/apt/sources.list.d/pop-os-release-ubuntu.sources ;;
+        esac
+        if [[ -s "$srcfile" ]] && grep -q '^Enabled:[[:space:]]*yes' "$srcfile"; then
+            added_any=1
+            continue
+        fi
+        url=""
+        for base in "$POP_APT_URL" "$POP_APT_ORIGIN_URL"; do
+            if curl -fsIL "${base}/${name}/dists/${BASE_CODENAME}/Release" >/dev/null 2>&1; then
+                url="${base}/${name}"
+                break
+            fi
+        done
+        if [[ -n "$url" ]]; then
+            cat <<EOF > "$srcfile"
+X-Repolib-Name: Pop_OS ${name}
+Enabled: yes
+Types: deb
+URIs: ${url}
+Suites: ${BASE_CODENAME}
+Components: main
+Signed-By: ${POP_KEYRING_FILE}
+EOF
+            added_any=1
+        fi
+    done
+
+    if [[ "$added_any" -eq 0 ]]; then
+        echo "ERROR: Could not configure or locate any Pop!_OS APT repository for '${BASE_CODENAME}'." >&2
+        exit 1
+    fi
+
+    write_popos_safe_pins
+}
+
+apt_install_available() {
+    local label="$1"
+    shift
+    local pkg candidate sim_out
+    local -a installable=()
+    for pkg in "$@"; do
+        candidate="$(apt-cache policy "$pkg" 2>/dev/null | awk '/Candidate:/ {print $2; exit}')"
+        [[ -z "$candidate" || "$candidate" == "(none)" ]] && continue
+        sim_out="$(apt-get -s install -y "$pkg" 2>&1)" || continue
+        if [[ "$sim_out" == Inst\ snapd* || "$sim_out" == *$'\nInst snapd '* || "$sim_out" == *$'\nInst snapd:'* ]]; then
+            continue
+        fi
+        installable+=("$pkg")
+    done
+    if ((${#installable[@]})); then
+        echo "=====> ${label}: installing ${installable[*]}"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "${installable[@]}"
+    fi
+}
+
+install_grub_theme_from_amd64_pkg() {
+    local rel_url=""
+    rel_url="$(_source_uri_from_file /etc/apt/sources.list.d/pop-os-release.sources)"
+    [[ -n "$rel_url" ]] || rel_url="${POP_APT_URL}/release"
+
+    local keyring="$POP_KEYRING_FILE"
+    if [[ ! -f "$keyring" && -f /etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg ]]; then
+        keyring="/etc/apt/trusted.gpg.d/pop-keyring-2017-archive.gpg"
+    fi
+    [[ -f "$keyring" ]] || return 1
+
+    local tmp_dir=""
+    tmp_dir="$(mktemp -d)"
+    local base_dist="${rel_url%/}/dists/${BASE_CODENAME}"
+    if ! curl -fsSL "${base_dist}/Release" -o "${tmp_dir}/Release" || \
+       ! curl -fsSL "${base_dist}/Release.gpg" -o "${tmp_dir}/Release.gpg"; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if ! gpgv --keyring "$keyring" "${tmp_dir}/Release.gpg" "${tmp_dir}/Release" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    local pkg_sha256=""
+    pkg_sha256="$(awk '
+        /^SHA256:/ {in_s=1; next}
+        /^[^ ]/ {in_s=0}
+        in_s && $3 == "main/binary-amd64/Packages.gz" {print $1; exit}
+    ' "${tmp_dir}/Release")"
+    if [[ -z "$pkg_sha256" ]] || \
+       ! curl -fsSL "${base_dist}/main/binary-amd64/Packages.gz" -o "${tmp_dir}/Packages.gz" || \
+       ! printf '%s  %s\n' "$pkg_sha256" "${tmp_dir}/Packages.gz" | sha256sum -c - >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    local deb_info="" deb_rel="" deb_sha256=""
+    deb_info="$(gzip -dc "${tmp_dir}/Packages.gz" | awk '
+        /^Package: / {pkg=$2; fn=""; sha=""}
+        /^Filename: / {fn=$2}
+        /^SHA256: / {sha=$2}
+        /^$/ {if (pkg == "grub-theme-pop" && fn != "" && sha != "") {print fn "\t" sha; found=1; exit}}
+        END {if (!found && pkg == "grub-theme-pop" && fn != "" && sha != "") print fn "\t" sha}
+    ')"
+    deb_rel="${deb_info%%$'\t'*}"
+    deb_sha256="${deb_info#*$'\t'}"
+    if [[ -z "$deb_rel" || -z "$deb_sha256" ]]; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    if ! curl -fsSL "${rel_url%/}/${deb_rel}" -o "${tmp_dir}/grub-theme-pop.deb" || \
+       ! printf '%s  %s\n' "$deb_sha256" "${tmp_dir}/grub-theme-pop.deb" | sha256sum -c - >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    mkdir -p "${tmp_dir}/extract"
+    dpkg-deb -x "${tmp_dir}/grub-theme-pop.deb" "${tmp_dir}/extract"
+    if [[ ! -f "${tmp_dir}/extract/usr/share/grub/themes/pop/theme.txt" ]]; then
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    install -d /usr/share/grub/themes
+    rm -rf /usr/share/grub/themes/pop
+    cp -a "${tmp_dir}/extract/usr/share/grub/themes/pop" /usr/share/grub/themes/pop
+    rm -rf "$tmp_dir"
+}
+
+ensure_aesthetic_branding() {
+    echo "=====> Ensuring Pop!_OS Plymouth, GRUB, and desktop aesthetics..."
+
+    # Plymouth
+    apt_install_available "Pop!_OS Plymouth theme" plymouth plymouth-label pop-plymouth-theme plymouth-theme-pop-basic
+    if dpkg -s plymouth-theme-ubuntu-text >/dev/null 2>&1; then
+        if ! apt-get -s purge -y plymouth-theme-ubuntu-text 2>/dev/null \
+            | awk '/^Remv / {print $2}' | grep -vx 'plymouth-theme-ubuntu-text' | grep -q .; then
+            DEBIAN_FRONTEND=noninteractive apt-get purge -y plymouth-theme-ubuntu-text || true
+        fi
+    fi
+    if [[ -f /usr/share/plymouth/themes/pop-basic/pop-basic.plymouth ]]; then
+        if ! update-alternatives --query default.plymouth 2>/dev/null | grep -Fq '/usr/share/plymouth/themes/pop-basic/pop-basic.plymouth'; then
+            update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
+                /usr/share/plymouth/themes/pop-basic/pop-basic.plymouth 200 >/dev/null 2>&1 || true
+        fi
+        update-alternatives --set default.plymouth /usr/share/plymouth/themes/pop-basic/pop-basic.plymouth 2>/dev/null || true
+    fi
+    if [[ -f /usr/share/plymouth/themes/text/text.plymouth ]]; then
+        update-alternatives --set text.plymouth /usr/share/plymouth/themes/text/text.plymouth 2>/dev/null || true
+    fi
+
+    # GRUB (pop-grub)
+    apt_install_available "Pop!_OS GRUB theme" grub-theme-pop
+    if [[ ! -f /usr/share/grub/themes/pop/theme.txt ]]; then
+        install_grub_theme_from_amd64_pkg || true
+    fi
+    install -d /etc/default/grub.d
+    cat <<'EOF' > /etc/default/grub.d/40-pop-menu.cfg
+# Pop!_OS GRUB menu defaults (managed by popos-migrate-branding)
+GRUB_TIMEOUT_STYLE=menu
+GRUB_TIMEOUT=10
+EOF
+    if [[ -f /usr/share/grub/themes/pop/theme.txt ]]; then
+        if [[ -f /usr/share/grub/themes/pop/icons/pop-os.png ]]; then
+            [[ ! -e /usr/share/grub/themes/pop/icons/pop_os.png ]] && ln -sf pop-os.png /usr/share/grub/themes/pop/icons/pop_os.png
+            [[ ! -e /usr/share/grub/themes/pop/icons/pop__os.png ]] && ln -sf pop-os.png /usr/share/grub/themes/pop/icons/pop__os.png
+        fi
+        install -d /boot/grub/themes
+        rm -rf /boot/grub/themes/pop
+        cp -a /usr/share/grub/themes/pop /boot/grub/themes/pop
+        cat <<'EOF' > /etc/default/grub.d/50-pop-branding.cfg
+# Pop!_OS GRUB branding (managed by popos-migrate-branding)
+GRUB_DISTRIBUTOR="Pop!_OS"
+GRUB_THEME="/boot/grub/themes/pop/theme.txt"
+EOF
+    else
+        cat <<'EOF' > /etc/default/grub.d/50-pop-branding.cfg
+# Pop!_OS GRUB branding (managed by popos-migrate-branding)
+GRUB_DISTRIBUTOR="Pop!_OS"
+EOF
+    fi
+
+    # Desktop aesthetic (only when a GUI display manager / desktop session exists)
+    if [[ "$DO_DESKTOP_THEME" -eq 1 ]] && \
+       { [[ -d /usr/share/xsessions || -d /usr/share/wayland-sessions ]] || \
+         dpkg -s xserver-xorg-core >/dev/null 2>&1 || dpkg -s wayland-protocols >/dev/null 2>&1; }; then
+        apt_install_available "Pop!_OS theme & wallpapers" pop-theme pop-wallpapers
+        if [[ -f /usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg && \
+              ! -e /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg ]]; then
+            install -d /usr/share/icons/hicolor/scalable/places
+            cp -a /usr/share/icons/Pop/128x128/places/distributor-logo-pop-os.svg \
+                /usr/share/icons/hicolor/scalable/places/distributor-logo-pop-os.svg
+            command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+                gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+        fi
+    fi
+
+    if [[ -f /boot/grub/grub.cfg ]] && command -v update-grub >/dev/null 2>&1; then
+        update-grub || true
+    fi
+    if command -v update-initramfs >/dev/null 2>&1; then
+        update-initramfs -u || true
+    fi
+}
+
+apply_lightweight_identity() {
+    echo "=====> Applying lightweight Pop!_OS OS-identity branding (${BASE_VERSION} / ${BASE_CODENAME})..."
+    install -d "${POP_BRAND_DIR}/update-motd.d"
+
+    cat <<EOF > "${POP_BRAND_DIR}/os-release"
+NAME="Pop!_OS"
+VERSION="${BASE_VERSION} LTS"
+ID=pop
+ID_LIKE="ubuntu debian"
+PRETTY_NAME="Pop!_OS ${BASE_VERSION} LTS"
+VERSION_ID="${BASE_VERSION}"
+HOME_URL="https://pop.system76.com"
+SUPPORT_URL="https://support.system76.com"
+BUG_REPORT_URL="https://github.com/pop-os/pop/issues"
+PRIVACY_POLICY_URL="https://system76.com/privacy"
+VERSION_CODENAME=${BASE_CODENAME}
+UBUNTU_CODENAME=${BASE_CODENAME}
+LOGO=distributor-logo-pop-os
+EOF
+
+    cat <<EOF > "${POP_BRAND_DIR}/lsb-release"
+DISTRIB_ID=Pop
+DISTRIB_RELEASE=${BASE_VERSION}
+DISTRIB_CODENAME=${BASE_CODENAME}
+DISTRIB_DESCRIPTION="Pop!_OS ${BASE_VERSION} LTS"
+EOF
+
+    printf 'Pop!_OS %s LTS \\n \\l\n\n' "$BASE_VERSION" > "${POP_BRAND_DIR}/issue"
+    printf 'Pop!_OS %s LTS\n' "$BASE_VERSION" > "${POP_BRAND_DIR}/issue.net"
+
+    cat <<'EOF' > "${POP_BRAND_DIR}/update-motd.d/10-help-text"
+#!/bin/sh
+printf "\n * Support:        https://support.system76.com\n"
+EOF
+    chmod 0755 "${POP_BRAND_DIR}/update-motd.d/10-help-text"
+
+    cat <<'EOF' > "${POP_BRAND_DIR}/update-motd.d/50-motd-news"
+#!/bin/sh
+exit 0
+EOF
+    chmod 0755 "${POP_BRAND_DIR}/update-motd.d/50-motd-news"
+
+    local pair src dst divert_to owner
+    for pair in \
+        "/etc/issue=${POP_BRAND_DIR}/issue" \
+        "/etc/issue.net=${POP_BRAND_DIR}/issue.net" \
+        "/etc/update-motd.d/10-help-text=${POP_BRAND_DIR}/update-motd.d/10-help-text" \
+        "/etc/update-motd.d/50-motd-news=${POP_BRAND_DIR}/update-motd.d/50-motd-news" \
+        "/etc/lsb-release=${POP_BRAND_DIR}/lsb-release" \
+        "/etc/os-release=${POP_BRAND_DIR}/os-release" \
+        "/usr/lib/os-release=${POP_BRAND_DIR}/os-release"; do
+        src="${pair%%=*}"
+        dst="${pair#*=}"
+        divert_to="${src}.uvb-diverted"
+        owner="$(dpkg-divert --listpackage "$src" 2>/dev/null || true)"
+        if [[ -z "$owner" ]]; then
+            dpkg-divert --local --rename --divert "$divert_to" --add "$src" >/dev/null
+        fi
+        install -d "$(dirname "$src")"
+        if [[ -L "$src" || ! -e "$src" ]]; then
+            ln --force --relative --symbolic "$dst" "$src"
+        fi
+    done
+}
+
+_os_release_summary() {
+    local file="${1:-/etc/os-release}"
+    [[ -r "$file" ]] || return 0
+    local pname oid
+    pname="$(awk -F= '/^PRETTY_NAME=/ {gsub(/^"|"$/, "", $2); print $2; exit}' "$file")"
+    oid="$(awk -F= '/^ID=/ {gsub(/^"|"$/, "", $2); print $2; exit}' "$file")"
+    echo "${pname:-unknown} (ID=${oid:-unknown})"
+}
+
+revert_lightweight_identity() {
+    echo "=====> Reverting Pop!_OS OS-identity diversions back to Ubuntu base-files..."
+    local pair src divert_to owner
+    for pair in \
+        "/etc/issue=${POP_BRAND_DIR}/issue" \
+        "/etc/issue.net=${POP_BRAND_DIR}/issue.net" \
+        "/etc/update-motd.d/10-help-text=${POP_BRAND_DIR}/update-motd.d/10-help-text" \
+        "/etc/update-motd.d/50-motd-news=${POP_BRAND_DIR}/update-motd.d/50-motd-news" \
+        "/etc/lsb-release=${POP_BRAND_DIR}/lsb-release" \
+        "/etc/os-release=${POP_BRAND_DIR}/os-release" \
+        "/usr/lib/os-release=${POP_BRAND_DIR}/os-release"; do
+        src="${pair%%=*}"
+        divert_to="${src}.uvb-diverted"
+        owner="$(dpkg-divert --listpackage "$src" 2>/dev/null || true)"
+        if [[ "$owner" == "LOCAL" ]]; then
+            [[ -L "$src" ]] && rm -f "$src"
+            dpkg-divert --local --rename --divert "$divert_to" --remove "$src" >/dev/null || true
+        fi
+    done
+    echo "=====> Done. /etc/os-release now reports: $(_os_release_summary /etc/os-release)"
+}
+
+show_status() {
+    echo "=== Pop!_OS Branding Migration Status ==="
+    if [[ -r /etc/os-release ]]; then
+        echo "  OS Identity   : $(_os_release_summary /etc/os-release)"
+    fi
+    if dpkg -s pop-default-settings >/dev/null 2>&1; then
+        echo "  pop-default-settings : installed"
+    else
+        echo "  pop-default-settings : not installed (Ubuntu upgrade-safe mode)"
+    fi
+    if [[ -f /etc/apt/preferences.d/pop-os-release ]]; then
+        echo "  APT pins      : /etc/apt/preferences.d/pop-os-release present"
+    else
+        echo "  APT pins      : missing"
+    fi
+    if [[ -f /boot/grub/themes/pop/theme.txt ]]; then
+        echo "  GRUB theme    : /boot/grub/themes/pop/theme.txt"
+    else
+        echo "  GRUB theme    : not present"
+    fi
+    if command -v update-alternatives >/dev/null 2>&1; then
+        echo "  Plymouth      : $(update-alternatives --query default.plymouth 2>/dev/null | awk '/^Value:/ {print $2; exit}')"
+    fi
+}
+
+case "$ACTION" in
+    status)
+        show_status
+        ;;
+    revert)
+        require_root
+        revert_lightweight_identity
+        ;;
+    apply)
+        require_root
+        detect_ubuntu_base
+        ensure_popos_repos
+        if [[ "$DO_UPGRADE" -eq 1 ]]; then
+            echo "=====> Running apt-get update && apt-get upgrade -y (Ubuntu base)..."
+            DEBIAN_FRONTEND=noninteractive apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+        fi
+        ensure_aesthetic_branding
+        apply_lightweight_identity
+        echo
+        echo "=====> Migration complete!"
+        show_status
+        ;;
+esac

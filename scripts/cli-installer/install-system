@@ -245,7 +245,10 @@ repeat_char() {
 }
 
 detect_live_distro() {
-    if [ -r /etc/os-release ] && grep -qs '^ID=pop$' /etc/os-release; then
+    if { [ -r /etc/os-release ] && grep -qs '^ID=pop$' /etc/os-release; } || \
+       { [ -r /etc/casper.conf ] && grep -qs 'BUILD_SYSTEM="Pop!_OS"' /etc/casper.conf; } || \
+       [ -f "${LIVE_CDROM}/popos" ] || \
+       [ -f /etc/default/grub.d/50-pop-branding.cfg ]; then
         DISTRO_ID="pop"
         DISTRO_NAME="Pop!_OS"
     else
@@ -571,7 +574,10 @@ host_arch() {
 }
 
 target_bootloader_id() {
-    if [ -r "$TARGET_ROOT/etc/os-release" ] && grep -qs '^ID=pop$' "$TARGET_ROOT/etc/os-release"; then
+    if { [ -r "$TARGET_ROOT/etc/os-release" ] && grep -qs '^ID=pop$' "$TARGET_ROOT/etc/os-release"; } || \
+       [ -f "$TARGET_ROOT/etc/default/grub.d/50-pop-branding.cfg" ] || \
+       [ -f "$TARGET_ROOT/boot/grub/themes/pop/theme.txt" ] || \
+       [ "$DISTRO_ID" = "pop" ]; then
         echo "pop"
     else
         echo "ubuntu"
