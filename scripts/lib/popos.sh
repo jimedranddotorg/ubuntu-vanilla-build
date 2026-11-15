@@ -107,7 +107,19 @@ function _popos_source_uri_from_file() {
     awk '/^Enabled:[[:space:]]*yes/ {en=1} /^URIs:[[:space:]]*/ {uri=$2} END {if (en && uri != "") print uri}' "$file"
 }
 
+function ensure_popos_legacy_sources_list_stub() {
+    # pop-default-settings.postinst runs `grep` and `sed -i` on /etc/apt/sources.list
+    # unconditionally under `set -e` even when DEB822 .sources files are used.
+    install -d /etc/apt
+    if [[ ! -f /etc/apt/sources.list ]]; then
+        cat <<'EOF' > /etc/apt/sources.list
+# Pop!_OS APT sources are configured in /etc/apt/sources.list.d/*.sources
+EOF
+    fi
+}
+
 function restore_popos_apt_sources() {
+    ensure_popos_legacy_sources_list_stub
     local keyring="$POP_KEYRING_FILE"
     local release_url="${POP_RELEASE_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-release.sources)}"
     local proprietary_url="${POP_PROPRIETARY_URL:-$(_popos_source_uri_from_file /etc/apt/sources.list.d/pop-os-apps.sources)}"
@@ -174,6 +186,7 @@ EOF
 function setup_pop_apt_repos() {
     echo "=====> configuring Pop!_OS APT repositories from ${POP_APT_URL} (staging excluded) ..."
 
+    ensure_popos_legacy_sources_list_stub
     apt-get install -y gnupg dirmngr ca-certificates curl
 
     install -d /usr/share/keyrings /etc/apt/sources.list.d /etc/apt/preferences.d
@@ -253,6 +266,7 @@ EOF
     # motd, pop-os-branding icons, plymouth-theme-pop-basic) via pop-default-settings
     # using dpkg-divert rather than a forked base-files package.
     echo "=====> installing pop-default-settings (Pop!_OS branding & defaults) ..."
+    ensure_popos_legacy_sources_list_stub
     if apt-cache show pop-default-settings >/dev/null 2>&1; then
         apt-get install -y pop-default-settings
         neutralize_pop_default_settings_blanket_pin
@@ -278,6 +292,7 @@ EOF
 function ensure_popos_default_settings_branding() {
     echo "=====> Verifying Pop!_OS branding via pop-default-settings (profile=${TARGET_IMAGE_PROFILE:-desktop}, desktop=${TARGET_DESKTOP:-gnome})"
 
+    ensure_popos_legacy_sources_list_stub
     if ! dpkg -s pop-default-settings >/dev/null 2>&1; then
         if apt-cache show pop-default-settings >/dev/null 2>&1; then
             apt-get install -y pop-default-settings

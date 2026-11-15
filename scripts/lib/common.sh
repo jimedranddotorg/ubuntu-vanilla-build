@@ -1396,6 +1396,7 @@ function chroot_prepare() {
     # Modern deb822 Ubuntu APT sources; replace debootstrap's one-line sources.list.
     rm -f /etc/apt/sources.list
     install -d /etc/apt/sources.list.d
+    [[ "$UVB_DISTRO" == "popos" ]] && ensure_popos_legacy_sources_list_stub
 
     local keyring="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
     local suites="${TARGET_UBUNTU_VERSION} ${TARGET_UBUNTU_VERSION}-updates ${TARGET_UBUNTU_VERSION}-backports ${TARGET_UBUNTU_VERSION}-security"
